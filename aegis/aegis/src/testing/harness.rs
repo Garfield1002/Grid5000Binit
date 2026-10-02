@@ -1,0 +1,620 @@
+use alloc::{boxed::Box, format, string::String, vec::Vec};
+use libaegis::{
+    cpu::*,
+    protocol::{
+        FEATURE_WORDS, FeatureBit, FeatureMask, SAVE_MODE_FXSAVE, SAVE_MODE_XSAVE, mask_has,
+        mask_set,
+    },
+    testcase::{ExceptionInfo, ExceptionVector, TestCase},
+};
+use raw_cpuid::CpuId;
+use x86_64::{
+    VirtAddr,
+    instructions::hlt,
+    registers::{
+        control::{Cr0, Cr0Flags, Cr2, Cr4, Cr4Flags},
+        xcontrol::{XCr0, XCr0Flags},
+    },
+    structures::{
+        idt::{InterruptStackFrame, PageFaultErrorCode},
+        paging::{Page, PageTableFlags, Size4KiB, mapper::MapToError},
+    },
+};
+
+use crate::{
+    kernel::{
+        Kernel,
+        interrupts::{IDT, UNIFIED_HANDLER, gdt::DOUBLE_FAULT_IST_INDEX},
+    },
+    println,
+};
+use core::sync::atomic::{AtomicU32, Ordering};
+use spin::Mutex;
+
+pub const ICE_START: usize = 0x_6666_6666_0000;
+pub const FIRE_START: usize = 0x_6666_6666_1000;
+
+pub const TEST_STACK_START: usize = 0x_6666_6600_0000;
+pub const TEST_STACK: usize = 0x_6666_6600_5fff;
+
+/// Independently seeded source and destination words for memory and string tests.
+pub const MEM_ADDR: usize = 0x_6666_6601_0100;
+pub const MEM1_ADDR: usize = 0x_6666_6601_0200;
+
+/// This needs to be aligned
+pub const CPU_DUMP_START: usize = 0x_5555_0000_0000;
+pub static DATASET: Mutex<Option<Box<dyn Dataset>>> = Mutex::new(None);
+pub static TEST_ID: Mutex<TestId> = Mutex::new(0);
+
+pub static TEST_INSN: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+
+/// Creates the ice and fire pages
+///
+/// The ice page is a writable page.
+/// The fire page has no permissions.
+///
+/// Instructions should be placed at the end of the ICE page, causing a page
+/// fault when the fire page is accessed.
+///
+/// 0x_6666_6666_0000 -> +---------------+
+///                      |               |
+///                      |    ICE page   |
+///                      |     (RWX)     |
+/// 0x_6666_6666_0FFF -> +---------------+
+///                      |               |
+///                      |   FIRE page   |
+///                      |      (0)      |
+///                      +---------------+
+///
+pub fn create_ice_and_fire(kernel: &mut Kernel) -> Result<(), MapToError<Size4KiB>> {
+    // ------------------------
+    // Ice page: R/W/X
+    // ------------------------
+    let ice_start = VirtAddr::new(ICE_START as u64);
+    let ice_page = kernel.memory_manager.map_addr(ice_start)?;
+
+    // ------------------------
+    // Stack page: R/W
+    // ------------------------
+    // Allocate the test stack plus one guard page below its nominal base.
+    // Exception delivery can consume that page while switching back from the
+    // one-instruction frame (observed at TEST_STACK_START - 0x408).
+    let mut addr = TEST_STACK_START - 0x1000;
+    while addr < TEST_STACK {
+        let stack_page_start = VirtAddr::new(addr as u64);
+        kernel.memory_manager.map_addr(stack_page_start)?;
+        addr += 0x1000;
+    }
+
+    let stack_start = VirtAddr::new((MEM_ADDR as u64) & 0xffff_ffff_f000);
+    kernel.memory_manager.map_addr(stack_start)?;
+
+    // ------------------------
+    // Map fire page normally first
+    // ------------------------
+    let fire_page: Page = ice_page + 1;
+    assert_eq!(fire_page.start_address(), VirtAddr::new(FIRE_START as u64));
+    let fire_page = kernel.memory_manager.map_addr(fire_page.start_address())?;
+
+    // ------------------------
+    // Remove all permissions from the fire page
+    // ------------------------
+    unsafe {
+        kernel
+            .memory_manager
+            .mapper()
+            .update_flags(fire_page, PageTableFlags::empty())
+            .expect("While creating the fire page, unable to clear flags")
+            .flush();
+    }
+
+    Ok(())
+}
+
+/// Create the CPU state huge page
+pub fn create_cpu_dump_pages(kernel: &mut Kernel) -> Result<(), MapToError<Size4KiB>> {
+    let start = VirtAddr::new(CPU_DUMP_START as u64);
+
+    let mut page = Page::<Size4KiB>::containing_address(start);
+
+    for _ in 0..4 {
+        kernel.memory_manager.map_addr(page.start_address())?;
+        page += 1;
+    }
+
+    Ok(())
+}
+
+/// Adds an instruction at the end of the ICE page and returns the address of this instruction
+pub fn set_ice_instruction(insn_buffer: &[u8]) -> VirtAddr {
+    let start = FIRE_START - insn_buffer.len();
+
+    // Safety: ICE page needs to be initialized
+    unsafe {
+        core::ptr::copy_nonoverlapping(insn_buffer.as_ptr(), start as *mut u8, insn_buffer.len());
+    }
+
+    VirtAddr::new(start as u64)
+}
+
+pub type TestId = usize;
+
+pub trait Dataset: Sync + Send {
+    /// Returns the next test of the dataset
+    fn next(&self) -> TestCase;
+
+    fn after_test(&mut self, id: TestId, state: &CpuState, exception: Option<ExceptionInfo>);
+}
+
+fn print_last_insn() {
+    let s = TEST_INSN
+        .lock()
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>();
+
+    println!("Last instruction: {}", s);
+}
+
+pub fn exception_handler(
+    state: &mut CpuState,
+    stack_frame: &mut InterruptStackFrame,
+    error_code: Option<u64>,
+    vector: ExceptionVector,
+) {
+    let mut is_exception = true;
+
+    if vector == ExceptionVector::Page {
+        let error_code = PageFaultErrorCode::from_bits_truncate(error_code.unwrap_or(0));
+        if state.rip < ICE_START as u64 || state.rip > (FIRE_START as u64 + 0x1000) {
+            print_last_insn();
+
+            let fault_addr = Cr2::read();
+            let fault_rip = stack_frame.instruction_pointer.as_u64();
+
+            println!("PAGE FAULT");
+            println!("CR2 / accessed addr = {:#x}", fault_addr.as_u64());
+            println!("RIP / faulting instr = {:#x}", fault_rip);
+            println!("error code = {:?}", error_code);
+            println!("saved rip = {:#x}", state.rip);
+
+            panic!(
+                "Unexpected page fault while not in test area: {:?}",
+                stack_frame
+            );
+        }
+
+        if error_code == PageFaultErrorCode::INSTRUCTION_FETCH {
+            is_exception = false;
+        } else {
+            print_last_insn();
+            println!(
+                "Attempted to access address {:#x} {error_code:#?}",
+                Cr2::read().as_u64()
+            );
+            hlt();
+        }
+    }
+    // println!("EXCEPTION {vector}({error_code:?})");
+
+    // Outside of the expected area
+    if vector != ExceptionVector::Page
+        && (state.rip < ICE_START as u64 || state.rip > (FIRE_START as u64 + 0x1000))
+    {
+        print_last_insn();
+        panic!("EXCEPTION {vector}({error_code:?}): \n{stack_frame:#?}");
+    }
+
+    let exception = if is_exception { Some(vector) } else { None };
+
+    landing_pad(state, exception);
+
+    // Give the test a stack
+    unsafe {
+        stack_frame.as_mut().update(|f| {
+            f.stack_pointer = VirtAddr::new(TEST_STACK as u64);
+            f.instruction_pointer = VirtAddr::new(run_test as *const () as u64);
+            // Clear flags
+            f.cpu_flags = 0;
+        });
+    }
+}
+
+// Double fault handler
+#[unsafe(no_mangle)]
+pub extern "x86-interrupt" fn double_fault_handler_testing(
+    stack_frame: InterruptStackFrame,
+    code: u64,
+) -> ! {
+    // Outside of the expected area
+    print_last_insn();
+    panic!("EXCEPTION: DOUBLE FAULT({code})\n{:#?}", stack_frame);
+}
+
+/// Active state save/restore variant (`SAVE_MODE_*`), selected once by
+/// `init_cpu`. Read by the interrupt entry stub and `run_test` assembly.
+pub static SAVE_MODE: AtomicU32 = AtomicU32::new(SAVE_MODE_FXSAVE);
+
+pub fn save_mode() -> u32 {
+    SAVE_MODE.load(Ordering::Relaxed)
+}
+
+/// Features usable by the kernel (set by `init_cpu`).
+pub static KERNEL_FEATURES: Mutex<FeatureMask> = Mutex::new([0; FEATURE_WORDS]);
+
+/// Enables the CPU state components that are present, and returns the
+/// feature mask that the guest can use. Nothing is asserted: missing features
+/// are reported to the host, which decides which cases to send.
+pub fn init_cpu() -> (FeatureMask, u32) {
+    let cpuid = CpuId::new();
+    let f1 = cpuid.get_feature_info();
+    let has_xsave = f1.as_ref().is_some_and(|f| f.has_xsave());
+
+    // OSXSAVE must be enabled before CPUID reports OSXSAVE support, and may
+    // only be set when XSAVE exists.
+    unsafe {
+        Cr4::update(|flags| {
+            *flags = flags.union(Cr4Flags::OSFXSR | Cr4Flags::OSXMMEXCPT_ENABLE);
+            if has_xsave {
+                *flags = flags.union(Cr4Flags::OSXSAVE);
+            }
+        });
+    }
+
+    // XCR0 only takes components the CPU supports (others raise #GP).
+    let mut xcr0 = XCr0Flags::X87;
+    let (mut ymm, mut zmm) = (false, false);
+    if has_xsave {
+        if let Some(st) = cpuid.get_extended_state_info() {
+            if st.xcr0_supports_sse_128() {
+                xcr0 |= XCr0Flags::SSE;
+            }
+            if st.xcr0_supports_sse_128() && st.xcr0_supports_avx_256() {
+                xcr0 |= XCr0Flags::AVX;
+                ymm = true;
+                if st.xcr0_supports_avx512_opmask()
+                    && st.xcr0_supports_avx512_zmm_hi256()
+                    && st.xcr0_supports_avx512_zmm_hi16()
+                {
+                    xcr0 |= XCr0Flags::OPMASK | XCr0Flags::ZMM_HI256 | XCr0Flags::HI16_ZMM;
+                    zmm = true;
+                }
+            }
+        }
+        unsafe { XCr0::write(xcr0) };
+    }
+
+    // Select the save/restore variant once: XSAVE needs XSAVE and OSXSAVE.
+    let osxsave = cpuid.get_feature_info().is_some_and(|f| f.has_oxsave());
+    let mode = if has_xsave && osxsave {
+        SAVE_MODE_XSAVE
+    } else {
+        SAVE_MODE_FXSAVE
+    };
+    SAVE_MODE.store(mode, Ordering::SeqCst);
+    println!(
+        "Save/restore mode: {}",
+        if mode == SAVE_MODE_XSAVE {
+            "XSAVE"
+        } else {
+            "FXSAVE"
+        }
+    );
+
+    // Re-read CPUID: OSXSAVE now reflects CR4.
+    let f1 = cpuid.get_feature_info();
+    let f7 = cpuid.get_extended_feature_info();
+    let ext = cpuid.get_extended_processor_and_feature_identifiers();
+
+    let mut m: FeatureMask = [0; FEATURE_WORDS];
+    let mut set = |cond: bool, f: FeatureBit| {
+        if cond {
+            mask_set(&mut m, f);
+        }
+    };
+    if let Some(f) = &f1 {
+        set(f.has_fpu(), FeatureBit::X87);
+        set(f.has_mmx(), FeatureBit::MMX);
+        set(f.has_sse(), FeatureBit::SSE);
+        set(f.has_sse2(), FeatureBit::SSE2);
+        set(f.has_sse3(), FeatureBit::SSE3);
+        set(f.has_ssse3(), FeatureBit::SSSE3);
+        set(f.has_sse41(), FeatureBit::SSE4_1);
+        set(f.has_sse42(), FeatureBit::SSE4_2);
+        set(f.has_popcnt(), FeatureBit::POPCNT);
+        set(f.has_aesni(), FeatureBit::AES);
+        set(f.has_pclmulqdq(), FeatureBit::PCLMULQDQ);
+        set(f.has_movbe(), FeatureBit::MOVBE);
+        set(f.has_rdrand(), FeatureBit::RDRAND);
+        set(f.has_cmpxchg16b(), FeatureBit::CMPXCHG16B);
+        set(has_xsave, FeatureBit::XSAVE);
+        set(f.has_oxsave(), FeatureBit::OSXSAVE);
+        set(ymm && f.has_avx(), FeatureBit::AVX);
+        set(ymm && f.has_fma(), FeatureBit::FMA);
+        set(ymm && f.has_f16c(), FeatureBit::F16C);
+    }
+    set(ext.is_some_and(|e| e.has_lzcnt()), FeatureBit::LZCNT);
+    if let Some(f) = &f7 {
+        set(f.has_bmi1(), FeatureBit::BMI1);
+        set(f.has_bmi2(), FeatureBit::BMI2);
+        set(f.has_adx(), FeatureBit::ADX);
+        set(f.has_sha(), FeatureBit::SHA);
+        set(f.has_rdseed(), FeatureBit::RDSEED);
+        set(ymm && f.has_avx2(), FeatureBit::AVX2);
+        set(zmm && f.has_avx512f(), FeatureBit::AVX512F);
+        set(zmm && f.has_avx512bw(), FeatureBit::AVX512BW);
+        set(zmm && f.has_avx512dq(), FeatureBit::AVX512DQ);
+        set(zmm && f.has_avx512vl(), FeatureBit::AVX512VL);
+        set(zmm && f.has_avx512cd(), FeatureBit::AVX512CD);
+        set(zmm && f.has_avx512vbmi(), FeatureBit::AVX512VBMI);
+        set(zmm && f.has_avx512vnni(), FeatureBit::AVX512VNNI);
+    }
+
+    println!("CPU features:");
+    for f in FeatureBit::ALL {
+        if mask_has(&m, *f) {
+            println!("  {}", f.name());
+        }
+    }
+    println!("XCR0 set from features: {:?}", xcr0);
+    println!("Cr0.TS: {}", Cr0::read().contains(Cr0Flags::TASK_SWITCHED));
+    println!(
+        "Cr0.EM: {}",
+        Cr0::read().contains(Cr0Flags::EMULATE_COPROCESSOR)
+    );
+
+    *KERNEL_FEATURES.lock() = m;
+    (m, mode)
+}
+
+pub fn init_dataset(dataset: Box<dyn Dataset>) {
+    // Sets the generic handler
+    unsafe {
+        UNIFIED_HANDLER = exception_handler;
+    }
+
+    // Sets the double fault handler
+    unsafe {
+        IDT.lock()
+            .double_fault
+            .set_handler_fn(double_fault_handler_testing)
+            .set_stack_index(DOUBLE_FAULT_IST_INDEX);
+    }
+
+    // Initialize the run
+    let mut kernel = Kernel::get();
+    println!("Initializing ice and fire...");
+    create_ice_and_fire(&mut kernel).expect("Failed to create ice or fire pages");
+    println!("Initializing CPU dump page...");
+    create_cpu_dump_pages(&mut kernel).expect("Failed to create the cpu dump pages");
+
+    // Sets the dataset
+    *DATASET.lock() = Some(dataset);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn run_test() -> ! {
+    let mut test = {
+        let dataset = DATASET.lock();
+
+        match dataset.as_ref() {
+            Some(d) => d.next(),
+            None => panic!("No dataset"),
+        }
+    };
+
+    *TEST_ID.lock() = test.id;
+    // Save the instruction for error logging
+
+    // if *TEST_INSN.lock() != test.insn[..test.size as usize] {
+    //     println!("New instruction: {:02x?}", &test.insn[..test.size as usize]);
+    // }
+
+    *TEST_INSN.lock() = test.insn[..test.size as usize].to_vec();
+
+    let rip = set_ice_instruction(&test.insn[..test.size as usize]).as_u64();
+    test.state.rip = rip;
+    // The XSAVE image carries one canonical physical x87/MMX register file.
+    // x87 logical and MMX views have already been merged by the host client.
+    test.state.avx.prepare_xrstor(&test.state.fpu);
+
+    unsafe {
+        if test.state.scratch_memory_len != 0 {
+            assert_eq!(test.state.scratch_memory_len as usize, SCRATCH_MEMORY_SIZE);
+            core::ptr::copy_nonoverlapping(
+                test.state.scratch_memory.as_ptr(),
+                MEM_ADDR as *mut u8,
+                SCRATCH_MEMORY_SIZE,
+            );
+        } else {
+            *(MEM_ADDR as *mut u64) = test.state.mem0;
+            *(MEM1_ADDR as *mut u64) = test.state.mem1;
+        }
+    }
+
+    // The interrupt stub writes only machine-state fields into this fixed
+    // buffer. Seed it first so transport-only fields (notably raw scratch
+    // memory and its presence marker) survive until `landing_pad` captures
+    // their post-instruction values.
+    unsafe {
+        core::ptr::copy_nonoverlapping(&test.state, CPU_DUMP_START as *mut CpuState, 1);
+    }
+
+    // test.state.flags.0 &= !INTERRUPT_FLAG_MASK;
+
+    unsafe {
+        core::arch::asm!(
+            /*
+                r15 = CpuState pointer.
+                Keep this until the very end.
+            */
+            "mov r15, {CPU_DUMP_ADDR}",
+
+            /*
+                Build an iretq frame on the target stack.
+
+                We want final RSP to equal CpuState.rsp after iretq.
+
+                Layout required by iretq, same privilege level:
+
+                    rsp + 0x00 = rip
+                    rsp + 0x08 = cs
+                    rsp + 0x10 = rflags
+
+                Therefore set temporary rsp to target_rsp - 24.
+            */
+            // "mov rax, rsp",
+            "mov rax, {TEST_STACK}",
+            "sub rax, 40",
+
+            "mov rcx, [r15 + {OFFSET_RIP}]",
+            "mov qword ptr [rax + 0x00], rcx",
+
+            "xor rcx, rcx",
+            "mov cx, cs",
+            "mov qword ptr [rax + 0x08], rcx",
+
+            "mov rcx, [r15 + {OFFSET_FLAGS}]",
+            "mov qword ptr [rax + 0x10], rcx",
+
+            "mov rcx, [r15 + {OFFSET_RSP}]",
+            "mov qword ptr [rax + 0x18], rcx",
+
+            "xor rcx, rcx",
+            "mov cx, ss",
+            "mov qword ptr [rax + 0x20], rcx",
+
+            /*
+                Save final iretq-frame pointer in r14.
+                r14 will be restored later, right before r15.
+            */
+            "mov r14, rax",
+
+            /* Restore the x87/MMX, SSE and AVX state (XCR0 components 0-2). */
+            "cmp dword ptr [rip + {SAVE_MODE}], 0",
+            "jne 2f",
+            "fxrstor64 [r15 + {OFFSET_AVX}]",
+            "jmp 3f",
+            "2:",
+            "mov eax, 0xE7",
+            "xor edx, edx",
+            "xrstor64 [r15 + {OFFSET_AVX}]",
+            "3:",
+
+            /*
+                Restore most GPRs.
+                Do not restore r14/r15 yet:
+                - r15 is still the CpuState pointer
+                - r14 holds the final iretq frame pointer
+            */
+            "mov rax, [r15 + {OFFSET_RAX}]",
+            "mov rbx, [r15 + {OFFSET_RBX}]",
+            "mov rcx, [r15 + {OFFSET_RCX}]",
+            "mov rdx, [r15 + {OFFSET_RDX}]",
+            "mov rsi, [r15 + {OFFSET_RSI}]",
+            "mov rdi, [r15 + {OFFSET_RDI}]",
+            "mov rbp, [r15 + {OFFSET_RBP}]",
+
+            "mov r8,  [r15 + {OFFSET_R8}]",
+            "mov r9,  [r15 + {OFFSET_R9}]",
+            "mov r10, [r15 + {OFFSET_R10}]",
+            "mov r11, [r15 + {OFFSET_R11}]",
+            "mov r12, [r15 + {OFFSET_R12}]",
+            "mov r13, [r15 + {OFFSET_R13}]",
+
+            /*
+                Switch to the artificial iretq frame.
+                After this, do not touch memory through rsp except via iretq.
+            */
+            "mov rsp, r14",
+
+            /*
+                Restore r14 and r15 last.
+                r15 is still usable as CpuState pointer until the second instruction.
+            */
+            "mov r14, [r15 + {OFFSET_R14}]",
+            "mov r15, [r15 + {OFFSET_R15}]",
+
+            /*
+                Restores RIP, CS, RFLAGS, and final RSP.
+            */
+            "iretq",
+
+            CPU_DUMP_ADDR = in(reg) &test.state,
+
+            OFFSET_AVX = const OFFSET_AVX,
+            OFFSET_RIP = const OFFSET_RIP,
+            OFFSET_FLAGS = const OFFSET_FLAGS,
+
+            OFFSET_RAX = const OFFSET_RAX,
+            OFFSET_RBX = const OFFSET_RBX,
+            OFFSET_RCX = const OFFSET_RCX,
+            OFFSET_RDX = const OFFSET_RDX,
+            OFFSET_RSI = const OFFSET_RSI,
+            OFFSET_RDI = const OFFSET_RDI,
+            OFFSET_RBP = const OFFSET_RBP,
+            OFFSET_RSP = const OFFSET_RSP,
+
+            OFFSET_R8 = const OFFSET_R8,
+            OFFSET_R9 = const OFFSET_R9,
+            OFFSET_R10 = const OFFSET_R10,
+            OFFSET_R11 = const OFFSET_R11,
+            OFFSET_R12 = const OFFSET_R12,
+            OFFSET_R13 = const OFFSET_R13,
+            OFFSET_R14 = const OFFSET_R14,
+            OFFSET_R15 = const OFFSET_R15,
+            TEST_STACK = const TEST_STACK,
+            SAVE_MODE = sym SAVE_MODE,
+
+            options(noreturn)
+        );
+    };
+}
+
+pub fn landing_pad(state: &mut CpuState, exception: Option<ExceptionVector>) {
+    // The interrupt entry FXSAVE image contains the canonical physical
+    // x87/MMX register file. The client projects it back into requested views.
+    state.fpu = state.avx.fpu_state();
+    if save_mode() == SAVE_MODE_XSAVE {
+        state.avx.normalize_xsave();
+    } else {
+        state.avx.clear_extended_state();
+    }
+
+    // Return either the requested raw scratch range or legacy word views.
+    if state.scratch_memory_len != 0 {
+        assert_eq!(state.scratch_memory_len as usize, SCRATCH_MEMORY_SIZE);
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                MEM_ADDR as *const u8,
+                state.scratch_memory.as_mut_ptr(),
+                SCRATCH_MEMORY_SIZE,
+            );
+        }
+    } else {
+        state.mem0 = unsafe { *(MEM_ADDR as *const u64) };
+        state.mem1 = unsafe { *(MEM1_ADDR as *const u64) };
+    }
+
+    let exception = exception.map(|kind| {
+        let mut insn = [0u8; 15];
+        let test_insn = TEST_INSN.lock();
+        let insn_size = core::cmp::min(test_insn.len(), insn.len());
+
+        insn[..insn_size].copy_from_slice(&test_insn[..insn_size]);
+
+        ExceptionInfo {
+            kind,
+            insn,
+            size: insn_size as u8,
+        }
+    });
+
+    {
+        // run some logic
+        match DATASET.lock().as_mut() {
+            Some(d) => d.after_test(*TEST_ID.lock(), state, exception),
+            None => panic!("No dataset"),
+        };
+    }
+}

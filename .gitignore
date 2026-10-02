@@ -1,0 +1,6 @@
+dist/
+target/
+.venv/
+logs/
+*.log
+__pycache__/

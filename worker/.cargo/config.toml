@@ -1,0 +1,11 @@
+[build]
+# default target is the host so `cargo test` works; release builds use musl:
+#   cargo build --release --target x86_64-unknown-linux-musl
+
+[env]
+# ring needs a C compiler for the musl target; clang works without musl-gcc.
+# (Overridable: set CC_x86_64_unknown_linux_musl yourself, e.g. musl-gcc.)
+CC_x86_64_unknown_linux_musl = "clang"
+
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=+crt-static"]

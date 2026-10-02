@@ -1,0 +1,37 @@
+[package]
+name = "aegis"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "aegis"
+test = false
+bench = false
+
+[dependencies]
+bootloader = { workspace = true, features = ["map_physical_memory"] }
+volatile.workspace = true
+lazy_static = { workspace = true, features = ["spin_no_std"] }
+spin.workspace = true
+x86_64.workspace = true
+uart_16550.workspace = true
+linked_list_allocator.workspace = true
+raw-cpuid.workspace = true
+libaegis.workspace = true
+
+[package.metadata.bootimage]
+run-args = [
+    "-enable-kvm",
+    "-cpu",
+    "host",
+    "-device",
+    "isa-debug-exit,iobase=0xf4,iosize=0x04",
+    "-serial",
+    "unix:/tmp/serial.sock,server,nowait",
+    "-device",
+    "ivshmem-plain,memdev=ivmem",
+    "-object",
+    "memory-backend-file,id=ivmem,share=on,mem-path=/dev/shm/ivshmem,size=16M",
+    "-no-reboot",
+]

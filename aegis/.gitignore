@@ -1,0 +1,12 @@
+/target
+/build
+/.venv
+/.vscode
+/angr
+/aegis.bundle
+test_results.txt
+__pycache__
+.pytest_cache__
+
+
+.gitBACKUP
