@@ -66,6 +66,33 @@ CREATE TABLE IF NOT EXISTS g5k_results (
 );
 CREATE INDEX IF NOT EXISTS idx_g5k_results_class ON g5k_results (class);
 
+-- Running mismatch counts per node and class, kept by the trigger below so that /status never scans
+-- g5k_results (tens of GB). Rebuild with `controller backfill-counts`.
+CREATE TABLE IF NOT EXISTS g5k_class_counts (
+    node_id bigint NOT NULL,
+    class   text   NOT NULL,
+    n       bigint NOT NULL,
+    PRIMARY KEY (node_id, class)
+);
+
+CREATE OR REPLACE FUNCTION g5k_count_result() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    INSERT INTO g5k_class_counts (node_id, class, n) VALUES (NEW.node_id, NEW.class, 1)
+    ON CONFLICT (node_id, class) DO UPDATE SET n = g5k_class_counts.n + 1;
+    RETURN NULL;
+END $$;
+
+CREATE OR REPLACE TRIGGER g5k_results_count AFTER INSERT ON g5k_results
+    FOR EACH ROW EXECUTE FUNCTION g5k_count_result();
+
+-- States with a result per instruction (status not ERR*): one pass over the corpus, filled by the
+-- controller on first use, so that the eligible total of any feature set is a sum over a small table.
+-- Empty it (TRUNCATE) after test_cases / test_results change.
+CREATE TABLE IF NOT EXISTS g5k_instruction_states (
+    instruction_id bigint PRIMARY KEY,
+    n              bigint NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS g5k_events (
     id      bigserial PRIMARY KEY,
     ts      timestamptz NOT NULL DEFAULT now(),
@@ -85,3 +112,27 @@ def migrate(pool) -> None:
         # Serialize concurrent migrations.
         conn.execute("SELECT pg_advisory_xact_lock(5000501)")
         conn.execute(DDL)
+
+
+def backfill_class_counts(dsn: str) -> int:
+    """Rebuild g5k_class_counts from g5k_results; returns the number of rows counted.
+
+    The reset happens under a lock that waits for in-flight inserts, so every row with id <= boundary
+    is committed and not yet counted, and every later row is counted by the trigger. The long scan
+    then runs without blocking /results."""
+    import psycopg
+
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute("SELECT pg_advisory_lock(5000501)")
+        conn.execute(DDL)
+        with conn.transaction():
+            conn.execute("LOCK TABLE g5k_results IN SHARE ROW EXCLUSIVE MODE")
+            conn.execute("TRUNCATE g5k_class_counts")
+            boundary = conn.execute("SELECT coalesce(max(id), 0) FROM g5k_results").fetchone()[0]
+        conn.execute(
+            """INSERT INTO g5k_class_counts (node_id, class, n)
+               SELECT node_id, class, count(*) FROM g5k_results WHERE id <= %s GROUP BY 1,2
+               ON CONFLICT (node_id, class) DO UPDATE SET n = g5k_class_counts.n + EXCLUDED.n""",
+            (boundary,),
+        )
+        return conn.execute("SELECT coalesce(sum(n), 0) FROM g5k_class_counts").fetchone()[0]

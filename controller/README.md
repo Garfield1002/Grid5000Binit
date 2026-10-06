@@ -14,7 +14,13 @@ mismatches. See `../SPEC.md` sections 2 and 3.
     uv run controller migrate             # migration only (idempotent)
 
 The controller only reads `test_cases`, `test_results`, `instruction_undefined_flags`;
-it writes `g5k_nodes`, `g5k_batches`, `g5k_results`, `g5k_events`, `instruction_features`.
+it writes `g5k_nodes`, `g5k_batches`, `g5k_results`, `g5k_events`, `instruction_features`, and two small
+bookkeeping tables so that `/status` never scans the big tables:
+
+- `g5k_class_counts`: mismatches per node and class, kept by a trigger on `g5k_results`.
+  `uv run controller backfill-counts` rebuilds it (one long scan, no downtime).
+- `g5k_instruction_states`: states with a result per instruction, filled on the first `/status` (one pass over
+  `test_results`); eligible totals are sums over it. `TRUNCATE` it after `test_cases`/`test_results` change.
 
 ## Endpoints (all need `Authorization: Bearer $CONTROLLER_TOKEN`; the monitoring ones also accept `?token=`)
 

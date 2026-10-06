@@ -201,3 +201,55 @@ def test_takeover_same_spec(client):
     # Another microcode is another run.
     d = reg("gros-3", "0x2")
     assert len(client.get(f"/batch?node_id={d}&size=10", headers=H).json()["cases"]) == 4
+
+
+def status_node(client, nid, want_total=False):
+    """The node's entry in /status.json; totals are counted in the background, so wait for them if asked."""
+    import time
+    for _ in range(50):
+        (n,) = [n for n in client.get("/status.json", headers=H).json()["nodes"] if n["node_id"] == nid]
+        if not want_total or n["total_cases"] is not None:
+            return n
+        time.sleep(0.1)
+    raise AssertionError("total_cases never counted")
+
+
+def test_class_counts(client):
+    from psycopg.conninfo import make_conninfo
+    from controller.schema import backfill_class_counts
+    pool = client.app.state.pool
+    nid = register(client, ["SSE"])
+    assert status_node(client, nid)["mismatch_classes"] == {}
+    b = client.get(f"/batch?node_id={nid}&size=10", headers=H).json()
+    body = {"node_id": nid, "batch_id": b["batch_id"], "ok_count": 1, "elapsed_s": 2,
+            "mismatches": [
+                {"test_case_id": 1, "state_index": 0, "got_final_state": {"rax": 1, "flag": 18}},
+                {"test_case_id": 1, "state_index": 1, "got_final_state": {"rax": 2, "flag": 3}},
+                {"test_case_id": 4, "state_index": 1, "status": "crash"}]}
+    want = {"undef_flags_only": 1, "defined_state": 1, "crash": 1}
+    assert client.post("/results", headers=H, json=body).json()["classes"] == want
+    assert status_node(client, nid)["mismatch_classes"] == want
+    # A batch reported twice is counted once.
+    client.post("/results", headers=H, json=body)
+    assert status_node(client, nid)["mismatch_classes"] == want
+    # /status reads the counts table, not g5k_results; backfill rebuilds it from the stored rows.
+    with pool.connection() as conn:
+        conn.execute("UPDATE g5k_class_counts SET n = 7")
+    assert set(status_node(client, nid)["mismatch_classes"].values()) == {7}
+    assert backfill_class_counts(make_conninfo(DSN, options=pool.kwargs["options"])) == 3
+    assert status_node(client, nid)["mismatch_classes"] == want
+
+
+def test_eligible_total(client):
+    pool = client.app.state.pool
+    sse = register(client, ["SSE"])
+    avx = client.post("/register", headers=H, json={"host": "h2", "cpuid_features": ["AVX"],
+                                                   "kernel_features": ["AVX"]}).json()["node_id"]
+    # ADD: 2 cases of 2 states; VADDPD: 1 state, AVX only; the ERR case is never counted.
+    assert status_node(client, sse, want_total=True)["total_cases"] == 4
+    assert status_node(client, avx, want_total=True)["total_cases"] == 5
+    with pool.connection() as conn:
+        rows = conn.execute("SELECT instruction_id, n FROM g5k_instruction_states").fetchall()
+    assert {r["instruction_id"]: r["n"] for r in rows} == {1: 4, 2: 1}
+    # The total matches what the node is actually served.
+    assert len(client.get(f"/batch?node_id={avx}&size=10", headers=H).json()["cases"]) == 5

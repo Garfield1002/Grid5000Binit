@@ -109,14 +109,20 @@ ORDER BY tc.id, s.idx
 LIMIT %(n)s
 """
 
+# One pass over test_results (the big table); run without parameters, so % is literal.
+STATES_COUNT_SQL = """
+SELECT tc.instruction_id, count(*) AS n
+FROM test_results tr
+JOIN test_cases tc ON tc.id = tr.test_case_id
+WHERE (tc.status IS NULL OR tc.status NOT LIKE 'ERR%')
+GROUP BY 1
+"""
+
 TOTAL_SQL = """
-SELECT count(*) AS n
-FROM test_cases tc
-CROSS JOIN LATERAL generate_series(0, jsonb_array_length(tc.initial_states) - 1) AS s(idx)
-JOIN test_results tr ON tr.test_case_id = tc.id AND tr.state_index = s.idx
-WHERE (tc.status IS NULL OR tc.status NOT LIKE 'ERR%%')
-  AND NOT EXISTS (SELECT 1 FROM instruction_features f
-                  WHERE f.instruction_id = tc.instruction_id
+SELECT coalesce(sum(s.n), 0)::bigint AS n
+FROM g5k_instruction_states s
+WHERE NOT EXISTS (SELECT 1 FROM instruction_features f
+                  WHERE f.instruction_id = s.instruction_id
                     AND NOT (f.feature = ANY(%(feats)s::text[])))
 """
 
@@ -190,6 +196,8 @@ def create_app(cfg: Config) -> FastAPI:
     pool_holder: dict[str, Any] = {}
     total_cache: dict[tuple, tuple[float, Optional[int]]] = {}
     total_lock = threading.Lock()
+    total_threads: dict[tuple, threading.Thread] = {}
+    total_run = threading.Lock()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -418,22 +426,39 @@ def create_app(cfg: Config) -> FastAPI:
 
     # ── monitoring ────────────────────────────────────────────────────
 
-    def total_for(conn, feats: list[str]) -> Optional[int]:
+    def count_total(key: tuple) -> None:
+        with total_run:  # one at a time: the first call scans the corpus, the others are cheap
+            try:
+                with get_pool().connection() as conn:
+                    if conn.execute("SELECT count(*) AS n FROM g5k_instruction_states").fetchone()["n"] == 0:
+                        conn.execute("SET LOCAL statement_timeout = '2h'")
+                        conn.execute("INSERT INTO g5k_instruction_states (instruction_id, n) " + STATES_COUNT_SQL)
+                with get_pool().connection() as conn:
+                    v = conn.execute(TOTAL_SQL, {"feats": list(key)}).fetchone()["n"]
+            except Exception:
+                log.exception("total count failed")
+                v = None
+        with total_lock:
+            total_cache[key] = (time.time(), v)
+
+    def total_for(feats: list[str]) -> Optional[int]:
+        """Eligible corpus size for a feature set. Counted in the background: /status waits a
+        second for it, then shows the total as unknown until the count is in."""
         key = tuple(feats)
         with total_lock:
             c = total_cache.get(key)
-            if c and time.time() - c[0] < 600:
+            # The corpus does not change while the controller runs: a count is kept for good,
+            # only a failure (slow query on a busy database) is retried, once a minute.
+            if c and (c[1] is not None or time.time() - c[0] < 60):
                 return c[1]
-        try:
-            conn.execute("SET LOCAL statement_timeout = '20s'")
-            v = conn.execute(TOTAL_SQL, {"feats": list(feats)}).fetchone()["n"]
-        except Exception:
-            log.exception("total count failed")
-            v = None
-            conn.rollback()
+            th = total_threads.get(key)
+            if th is None or not th.is_alive():
+                th = total_threads[key] = threading.Thread(target=count_total, args=(key,), daemon=True)
+                th.start()
+        th.join(1.0)
         with total_lock:
-            total_cache[key] = (time.time(), v)
-        return v
+            c = total_cache.get(key)
+        return c[1] if c else None
 
     def build_status() -> dict:
         with get_pool().connection() as conn:
@@ -445,8 +470,9 @@ def create_app(cfg: Config) -> FastAPI:
                           extract(epoch FROM now() - last_seen) AS last_seen_ago_s
                    FROM g5k_nodes ORDER BY host"""
             ).fetchall()
-            cls = {}
-            for r in conn.execute("SELECT node_id, class, count(*) AS n FROM g5k_results GROUP BY 1,2"):
+            # Maintained by a trigger on g5k_results; never scan that table here.
+            cls: dict = {}
+            for r in conn.execute("SELECT node_id, class, n FROM g5k_class_counts"):
                 cls.setdefault(r["node_id"], {})[r["class"]] = r["n"]
             events = conn.execute(
                 "SELECT id, ts, kind, node_id, host, detail FROM g5k_events ORDER BY id DESC LIMIT 50"
@@ -454,7 +480,7 @@ def create_app(cfg: Config) -> FastAPI:
             models: dict[str, dict] = {}
             out_nodes = []
             for n in nodes:
-                total = total_for(conn, n["features"])
+                total = total_for(n["features"])
                 rate = n["done_cases"] / n["work_s"] if n["work_s"] > 0 else None
                 remaining = max(total - n["done_cases"], 0) if total is not None else None
                 eta = remaining / rate if (rate and remaining is not None) else None
