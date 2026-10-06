@@ -194,13 +194,10 @@ def create_app(cfg: Config) -> FastAPI:
         h = request.headers.get("authorization", "")
         supplied = h[7:] if h.lower().startswith("bearer ") else (token or "")
         if not hmac.compare_digest(supplied.encode(), cfg.token.encode()):
-            try:
-                with get_pool().connection() as conn:
-                    add_event(conn, "auth_failure",
-                              ip=request.client.host if request.client else None,
-                              path=request.url.path, had_header=bool(h))
-            except Exception:
-                log.exception("could not record auth failure")
+            # Logged only: on a public address anyone can trigger this, so it must not write to the DB.
+            log.warning("auth_failure", extra={"event": "auth_failure", "path": request.url.path,
+                                               "ip": request.client.host if request.client else None,
+                                               "had_header": bool(h)})
             raise HTTPException(401, "unauthorized", headers={"WWW-Authenticate": "Bearer"})
 
     @app.post("/register", dependencies=[Depends(auth)])

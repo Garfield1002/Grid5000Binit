@@ -63,7 +63,10 @@ def register(client, feats):
 
 def test_auth(client):
     assert client.post("/register", json={"host": "x"}).status_code == 401
-    assert client.get("/status.json", headers=H).json()["events"][0]["kind"] == "auth_failure"
+    assert client.get("/mismatches").status_code == 401
+    assert client.get("/mismatches?token=tok").status_code == 200
+    # A failed auth leaves no trace in the database.
+    assert client.get("/status.json", headers=H).json()["events"] == []
 
 
 def test_feature_filtering_and_cursor(client):

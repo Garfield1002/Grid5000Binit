@@ -21,9 +21,11 @@ it writes `g5k_nodes`, `g5k_batches`, `g5k_results`, `g5k_events`, `instruction_
 - `POST /register`, `GET /batch?node_id=&size=`, `POST /results`, `POST /heartbeat` (spec section 2).
   Re-registering the same `host` keeps its node_id and cursor (resume).
 - `GET /status` (HTML, refresh 10 s), `GET /status.json`, `GET /mismatches?class=&host=&insn=&limit=&offset=`.
+- A failed authentication is answered 401 and logged (`auth_failure` in `logs/controller.jsonl`); it writes
+  nothing to the database, so scanners cannot fill `g5k_events`.
 
-Events (`g5k_events`, logs, `/status`): register, batch_start, batch_done, crash, auth_failure,
-node_silent, node_recovered, node_done.
+Events (`g5k_events`, logs, `/status`): register, batch_start, batch_done, crash, node_silent,
+node_recovered, node_done.
 
 ## Semantics
 
