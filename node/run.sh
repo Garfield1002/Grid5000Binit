@@ -2,6 +2,9 @@
 # Runs ON a Grid5000 node (as the OAR job command). Prepares the node and loops g5k-worker
 # until the controller reports no more work. The worker is run with --once: exit 0 means the
 # controller has no more cases (done, stop); any non-zero exit (fatal error, signal) restarts it.
+# WALLTIME_MARGIN_S (default 300) before the OAR walltime it exits 99, which makes OAR resubmit an
+# idempotent job (a job that runs into its walltime is not resubmitted); the next job resumes from
+# the controller cursor.
 # Needs CONTROLLER_URL / CONTROLLER_TOKEN, from the environment or from ~/g5kbinit/env
 # (written 0600 by the submit scripts, so the token is not visible in `oarstat`).
 # Optional: BATCH_SIZE (1000), TIMEOUT_MS (10000), HTTP_PROXY_URL (http://proxy:3128).
@@ -47,15 +50,24 @@ log "host=$HOST cpu='$cpu' qemu=$QEMU controller=$CONTROLLER_URL proxy=$http_pro
 
 chmod +x "$BASE/g5k-worker" 2>/dev/null || true
 fails=0
+deadline=$(( ${OAR_JOB_WALLTIME_SECONDS:-0} - ${WALLTIME_MARGIN_S:-300} ))
 while :; do
+    limit=()
+    if [[ -n "${OAR_JOB_WALLTIME_SECONDS:-}" ]]; then
+        if (( deadline - SECONDS < 60 )); then
+            log "walltime almost reached: exit 99 so that OAR resubmits the job"; exit 99
+        fi
+        limit=(timeout -k 20 "$((deadline - SECONDS))")
+    fi
     log "starting worker"
     start=$SECONDS
-    "$BASE/g5k-worker" --bootimage "$BASE/aegis-bootimage.bin" --qemu "$QEMU" \
+    "${limit[@]}" "$BASE/g5k-worker" --bootimage "$BASE/aegis-bootimage.bin" --qemu "$QEMU" \
         --batch-size "${BATCH_SIZE:-1000}" --timeout-ms "${TIMEOUT_MS:-10000}" --once
     rc=$?
     if [[ $rc -eq 0 ]]; then
         log "worker exited 0: controller reported done"; exit 0
     fi
+    [[ $rc -eq 124 ]] && continue  # stopped by the walltime limit above
     # A run that lasted a while resets the backoff.
     (( SECONDS - start > 120 )) && fails=0
     fails=$((fails + 1))
