@@ -1,7 +1,9 @@
 # Grid5000Binit
 
-Run Aegis hardware capture (a tiny x86_64 kernel booted in QEMU/KVM) on every Grid5000 (G5K)
-node. A central **controller** streams x86db test cases; each node's **worker** executes them
+Run Aegis hardware capture (a tiny x86_64 kernel booted in QEMU/KVM) on as many distinct CPU
+models as Grid5000 (G5K) offers, to measure how instructions behave across microarchitectures.
+Clusters are homogeneous, so the unit of coverage is the cluster (one node each by default), not
+the node. A central **controller** streams x86db test cases; each node's **worker** executes them
 inside the guest and reports `ok` or the observed state diff. Differences in *undefined* flags are
 a primary research target, so nothing is masked. Full contract: [SPEC.md](SPEC.md).
 
@@ -63,7 +65,7 @@ scripts/build.sh --site nancy       # dist/{g5k-worker,aegis-bootimage.bin,node/
 ssh nancy.g5k
 export CONTROLLER_URL=https://your.host CONTROLLER_TOKEN=...
 cd ~/g5kbinit/node
-./submit-besteffort.sh gros            # or: ./submit-reserve.sh -w 4:00:00 gros
+./submit-besteffort.sh gros grouille   # one node per cluster; or: ./submit-reserve.sh -w 4:00:00 gros
 oarstat -u
 ```
 
@@ -76,17 +78,25 @@ Smoke-test one node first: `oarsub -I -l host=1 -p "cluster='gros'"` then `bash 
 
 ### What the submit scripts do
 
-Run on a frontend. For each cluster they list its non-dead hosts with
-`oarnodes -J --sql "cluster='X' AND state != 'Dead'"` and submit **one job per host**, pinned with
-`-p "host='<fqdn>'" -l host=1,walltime=...`. Reason: submitting `-l host=1` N times with host
-exclusion gives no guarantee that every node is covered exactly once (the scheduler picks any free
-host and exclusions must be updated between submissions); pinning is deterministic and idempotent
-to re-run. Dead/absent nodes are skipped; busy nodes simply queue.
+Run on a frontend. By default they submit **one job per cluster**, not pinned to a host
+(`-p "cluster='X'" -l host=1,walltime=...`), since the target is distinct CPU models and a cluster
+is homogeneous: OAR runs it on any free host of the cluster. A run belongs to a hardware spec, not
+to a host: a node that registers continues from the most advanced node with the same CPU model,
+microcode, feature set and save mode (`resumed_from` in the `register` event; the previous host
+shows as `moved`). So a best-effort job killed on `gros-12` and resubmitted on `gros-87` carries on
+where it stopped. `node/run.sh` also exits 99 five minutes before the walltime, which makes OAR
+resubmit an idempotent job that would otherwise just end.
 
-- `submit-besteffort.sh [-w walltime] <cluster...>`: `-t besteffort -t idempotent`, default 24h. Jobs
+There is no option to run several nodes of a cluster: hosts with the same spec share one run, so
+they would duplicate work instead of splitting it. To check a result on a given host, submit by
+hand with `-p "host='<fqdn>'"`.
+
+- `submit-besteffort.sh [opts] <cluster...>`: `-t besteffort -t idempotent`, default 24h. Jobs
   get killed when someone reserves the node and OAR resubmits them; the worker resumes from the
   controller cursor.
-- `submit-reserve.sh [-w walltime] <cluster...>`: normal jobs, default 2:00:00.
+- `submit-reserve.sh [opts] <cluster...>`: normal jobs, default 2:00:00.
+- Options: `-w walltime`, `-t type` (repeatable; exotic clusters need `-t exotic`),
+  `-q queue` (production clusters need `-q production` and the matching access rights).
 - `CONTROLLER_URL/TOKEN` (and optional `BATCH_SIZE`, `TIMEOUT_MS`) are written to `~/g5kbinit/env`
   (mode 600) and sourced by `node/run.sh`, so the token does not show in `oarstat`.
 
@@ -135,7 +145,7 @@ behaviour differs between microarchitectures.
   from the node. 401s show as `auth_failure` events. For tunnels, check `GatewayPorts` and `no_proxy`.
 - Lots of `crash`: raise `TIMEOUT_MS`, inspect the node log for QEMU stderr; verify `-cpu host` works
   (nested virtualization not involved on bare-metal nodes).
-- Nodes silent after being killed: expected for besteffort; idempotent resubmission restarts them, the
-  controller resumes from the cursor (a batch not reported is re-served).
+- Nodes silent after being killed: expected for besteffort; idempotent resubmission restarts the job on
+  any host of the cluster, which takes the run over (a batch not reported is re-served).
 - Jobs never start: `oarstat -fj <id>`; besteffort only runs on idle resources; use reserve.
 - Stop everything: `oardel $(oarstat -u -J | grep -o '"Job_Id": *"[0-9]*"' | grep -o '[0-9]*')`.
