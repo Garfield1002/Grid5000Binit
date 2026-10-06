@@ -107,9 +107,11 @@ OAR stdout/stderr in `~/g5kbinit/logs/oar.*`.
 
 ## Monitoring
 
-- `scripts/status.sh` (needs `CONTROLLER_URL/TOKEN`): per-node progress, rate, ETA, mismatch classes,
-  per-CPU-model aggregate, recent events. `--raw` prints the JSON.
-- Browser: `$CONTROLLER_URL/status?token=...` (auto-refresh), `/mismatches?class=&host=&insn=`.
+- `scripts/status.sh` (needs `CONTROLLER_URL/TOKEN`): per-run progress, rate, ETA, mismatch classes,
+  recent events. `--raw` prints the JSON.
+- Browser: `$CONTROLLER_URL/status?token=...` (auto-refresh): the objective (CPU models done out of the
+  `controller/controller/targets.csv` targets, by microarchitecture), then the
+  runs. Also `/mismatches?class=&host=&insn=`.
 - Silent nodes (no heartbeat for `SILENT_AFTER_S`, default 120 s) are flagged; events `node_silent` /
   `node_recovered` are logged. On the frontend: `oarstat -u`, `tail -f ~/g5kbinit/logs/*.log`.
 

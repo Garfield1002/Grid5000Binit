@@ -1,0 +1,439 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Grid5000Binit status</title>
+<style>
+/* Colours, light then dark */
+:root {
+  --bg: #f7f7f5;
+  --card: #fff;
+  --fg: #1c1d1f;
+  --mut: #6b6f76;
+  --line: #dcdcd7;
+  --done: #1f7a4d;
+  --done-bg: #dff1e6;
+  --act: #1d5fb8;
+  --act-bg: #dfeafa;
+  --stal: #8a5a00;
+  --stal-bg: #fbecc8;
+  --warn: #a11;
+  --warn-bg: #fde2e2;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16171a;
+    --card: #1f2125;
+    --fg: #e8e8e6;
+    --mut: #9a9fa8;
+    --line: #34373d;
+    --done: #6fd39c;
+    --done-bg: #173626;
+    --act: #8ab8f5;
+    --act-bg: #172c4a;
+    --stal: #f0c264;
+    --stal-bg: #3d2f0c;
+    --warn: #ff9c9c;
+    --warn-bg: #4a1a1a;
+  }
+}
+
+/* Page */
+body {
+  font: 14px/1.45 system-ui, sans-serif;
+  margin: 0;
+  padding: 20px 24px;
+  background: var(--bg);
+  color: var(--fg);
+}
+h1 {
+  font-size: 20px;
+  margin: 0 0 2px;
+}
+h2 {
+  font-size: 15px;
+  margin: 28px 0 8px;
+}
+a {
+  color: var(--act);
+}
+.meta, .sub, .label, small, .legend {
+  color: var(--mut);
+  font-size: 12px;
+}
+
+/* Summary tiles */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+.tile {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.value {
+  font-size: 24px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.value span {
+  font-size: 14px;
+  color: var(--mut);
+  font-weight: 400;
+}
+
+/* Progress bars */
+.bar {
+  display: flex;
+  height: 6px;
+  background: var(--line);
+  border-radius: 3px;
+  overflow: hidden;
+  margin: 4px 0;
+}
+.bar .done {
+  background: var(--done);
+}
+.bar .active {
+  background: var(--act);
+}
+
+/* Tables */
+.scroll {
+  overflow-x: auto;
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+  background: var(--card);
+}
+td, th {
+  border: 1px solid var(--line);
+  padding: 3px 8px;
+  text-align: left;
+  font-size: 12.5px;
+  vertical-align: top;
+}
+td {
+  font-family: ui-monospace, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+td.chips, td.wrap {
+  white-space: normal;
+}
+th {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.prog {
+  min-width: 200px;
+}
+.n {
+  white-space: nowrap;
+}
+
+/* Coverage chips */
+.chips {
+  font-family: inherit;
+}
+.chip {
+  display: inline-block;
+  margin: 2px 4px 2px 0;
+  padding: 1px 7px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.chip small {
+  margin-left: 5px;
+}
+.chip.abaca {
+  border-style: dashed;
+}
+.chip.todo {
+  color: var(--mut);
+}
+.chip.done {
+  background: var(--done-bg);
+  border-color: var(--done);
+  color: var(--done);
+}
+.chip.active {
+  background: var(--act-bg);
+  border-color: var(--act);
+  color: var(--act);
+}
+.chip.stalled {
+  background: var(--stal-bg);
+  border-color: var(--stal);
+  color: var(--stal);
+}
+.chip.done small, .chip.active small, .chip.stalled small {
+  color: inherit;
+  opacity: .8;
+}
+
+/* Warnings */
+.warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+.banner {
+  padding: 6px 10px;
+  border-radius: 6px;
+}
+[hidden] {
+  display: none;
+}
+</style>
+</head>
+<body>
+<h1>Grid5000Binit controller</h1>
+<div class="meta">
+  <span id="updated">loading</span> | refreshes every 10 s |
+  <a href="/status.json">status.json</a> | <a id="mismatches" href="/mismatches">mismatches</a> (token needed)
+</div>
+<p id="error" class="warn banner" hidden></p>
+<p id="banner" class="warn banner" hidden></p>
+<div id="tiles" class="tiles"></div>
+
+<div id="coverage" hidden>
+  <h2>Coverage by microarchitecture</h2>
+  <p class="legend">
+    <span class="chip done">&#10003; done</span><span class="chip active">&#9654; running</span>
+    <span class="chip stalled">&#10073;&#10073; stalled</span><span class="chip todo">not started</span>
+    <span class="chip todo abaca">not started, Abaca only</span>
+  </p>
+  <table class="cov"><tbody id="cov"></tbody></table>
+</div>
+
+<h2>Runs</h2>
+<div class="scroll"><table>
+  <thead><tr>
+    <th title="every host the run went through, the current one in bold">nodes</th><th>cpu</th><th>save</th>
+    <th>state</th><th>progress</th><th title="inside the VM, transfer not included">rate</th><th>ETA</th>
+    <th>mismatches</th><th>qemu restarts</th><th>last seen</th>
+  </tr></thead>
+  <tbody id="runs"></tbody>
+</table></div>
+
+<h2>Recent events</h2>
+<div class="scroll"><table>
+  <thead><tr><th>time</th><th>kind</th><th>host</th><th>detail</th></tr></thead>
+  <tbody id="events"></tbody>
+</table></div>
+
+<script>
+const REFRESH_S = 10;
+
+const MARK = {
+  done: "&#10003;",
+  active: "&#9654;",
+  stalled: "&#10073;&#10073;",
+  todo: "",
+};
+
+// ── Formatting helpers ───────────────────────────────────────────────
+
+const $ = (id) => document.getElementById(id);
+
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
+const num = (n) => (n == null ? "-" : Math.round(n).toLocaleString("en-US"));
+
+const pad = (n) => String(n).padStart(2, "0");
+
+const percent = (x, digits) => `${(100 * x).toFixed(digits)}%`;
+
+function dur(s) {
+  if (s == null) {
+    return "?";
+  }
+  s = Math.floor(s);
+  if (s >= 86400) {
+    return `${Math.floor(s / 86400)}d${pad(Math.floor((s % 86400) / 3600))}h`;
+  }
+  if (s >= 3600) {
+    return `${Math.floor(s / 3600)}h${pad(Math.floor((s % 3600) / 60))}m`;
+  }
+  return `${Math.floor(s / 60)}m${pad(s % 60)}s`;
+}
+
+function short(model) {
+  return model.replace(/^(Intel Xeon |AMD EPYC |Intel |AMD )/, "");
+}
+
+function classes(counts) {
+  const parts = Object.keys(counts)
+    .sort()
+    .map((k) => `${esc(k)}=${counts[k]}`);
+  return parts.join(", ") || "-";
+}
+
+// ── Page parts, each returning an HTML string ────────────────────────
+
+function bar(done, active = 0) {
+  return [
+    `<div class="bar">`,
+    `<i class="done" style="width:${percent(done, 1)}"></i>`,
+    `<i class="active" style="width:${percent(active, 1)}"></i>`,
+    `</div>`,
+  ].join("");
+}
+
+function tile(label, done, total, sub, active = 0) {
+  const doneFrac = total ? done / total : 0;
+  const activeFrac = total ? active / total : 0;
+  return [
+    `<div class="tile">`,
+    `<div class="label">${esc(label)}</div>`,
+    `<div class="value">${done}<span> / ${total}</span></div>`,
+    bar(doneFrac, activeFrac),
+    `<div class="sub">${esc(sub)}</div>`,
+    `</div>`,
+  ].join("");
+}
+
+function tiles(objective) {
+  const { models, reachable, microarchs } = objective;
+  if (!models.total) {
+    return "";
+  }
+  const detail = `${models.active} running, ${models.stalled} stalled, ${models.todo} not started`;
+  return [
+    tile("CPU models done", models.done, models.total, detail, models.active),
+    tile("Reachable without Abaca", reachable.done, reachable.total, "default, exotic and testing queues"),
+    tile("Microarchitectures done", microarchs.done, microarchs.total, `${microarchs.started} started`),
+  ].join("");
+}
+
+function chip(target) {
+  const t = target;
+  const inProgress = t.status != "done" && t.status != "todo";
+  const pct = inProgress ? ` ${percent(t.progress, 0)}` : "";
+  const hosts = t.hosts.length ? `, ${t.hosts.join(", ")}` : "";
+  const tip = `${t.cpu_model}: ${t.status}, ${t.cluster} (${t.site}, ${t.queue})${hosts}`;
+  const cls = `chip ${t.status}${t.abaca ? " abaca" : ""}`;
+  return [
+    `<span class="${cls}" title="${esc(tip)}">`,
+    `${MARK[t.status]} ${esc(short(t.cpu_model))}`,
+    `<small>${esc(t.cluster)}${pct}</small>`,
+    `</span>`,
+  ].join("");
+}
+
+function coverage(targets) {
+  // One row per microarchitecture, in the order of the targets.
+  const byArch = new Map();
+  for (const t of targets) {
+    if (!byArch.has(t.microarch)) {
+      byArch.set(t.microarch, []);
+    }
+    byArch.get(t.microarch).push(t);
+  }
+
+  const rows = [];
+  for (const [arch, ts] of byArch) {
+    const done = ts.filter((t) => t.status == "done").length;
+    rows.push(
+      [
+        `<tr>`,
+        `<th>${esc(arch)}</th>`,
+        `<td class="n">${done}/${ts.length}</td>`,
+        `<td class="chips">${ts.map(chip).join("")}</td>`,
+        `</tr>`,
+      ].join(""),
+    );
+  }
+  return rows.join("");
+}
+
+function runRow(run) {
+  const n = run;
+  // Every host the run went through, the current one in bold.
+  const hosts = n.hosts.map((h) => (h == n.host ? `<b>${esc(h)}</b>` : esc(h))).join(", ");
+  const frac = n.total_cases ? Math.min(n.done_cases / n.total_cases, 1) : 0;
+  const total = n.total_cases == null ? "?" : num(n.total_cases);
+  const cpu = n.target ? esc(n.target) : `${esc(n.cpu_model)} <small>(not a target)</small>`;
+  const cpuTip = `${n.cpu_model}, microcode ${n.microcode}`;
+  return [
+    `<tr class="${n.silent ? "warn" : ""}">`,
+    `<td class="wrap">${hosts}${n.silent ? " SILENT" : ""}</td>`,
+    `<td title="${esc(cpuTip)}">${cpu}</td>`,
+    `<td>${esc(n.save_mode || "?")}</td>`,
+    `<td>${esc(n.state)}</td>`,
+    `<td class="prog">${bar(frac)}${num(n.done_cases)} / ${total} (${percent(frac, 1)})</td>`,
+    `<td>${num(n.rate_cases_per_s)}/s</td>`,
+    `<td>${dur(n.eta_s)}</td>`,
+    `<td>${classes(n.mismatch_classes)}</td>`,
+    `<td>${n.qemu_restarts}</td>`,
+    `<td>${dur(n.last_seen_ago_s)} ago</td>`,
+    `</tr>`,
+  ].join("");
+}
+
+function eventRow(ev) {
+  return [
+    `<tr>`,
+    `<td>${esc(ev.ts.slice(0, 19))}</td>`,
+    `<td>${esc(ev.kind)}</td>`,
+    `<td>${esc(ev.host || "")}</td>`,
+    `<td class="wrap">${esc(JSON.stringify(ev.detail))}</td>`,
+    `</tr>`,
+  ].join("");
+}
+
+// ── Rendering and refresh ────────────────────────────────────────────
+
+function render(status) {
+  const objective = status.objective;
+  const silent = status.silent_nodes;
+
+  $("banner").hidden = !silent.length;
+  $("banner").textContent = `Silent nodes: ${silent.join(", ")}`;
+
+  $("tiles").innerHTML = tiles(objective);
+
+  $("coverage").hidden = !objective.targets.length;
+  $("cov").innerHTML = coverage(objective.targets);
+
+  $("runs").innerHTML = status.runs.map(runRow).join("");
+  $("events").innerHTML = status.events.map(eventRow).join("");
+
+  const at = new Date(status.generated_at * 1000);
+  $("updated").textContent = `updated ${at.toLocaleTimeString()}`;
+}
+
+async function refresh() {
+  try {
+    const response = await fetch("/status.json");
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    render(await response.json());
+    $("error").hidden = true;
+  } catch (err) {
+    // Keep showing the last data.
+    $("error").textContent = `refresh failed: ${err.message}`;
+    $("error").hidden = false;
+  }
+}
+
+// The mismatches page needs the token: carry it over when this page was opened with one.
+const token = new URLSearchParams(location.search).get("token");
+if (token) {
+  $("mismatches").href += `?token=${encodeURIComponent(token)}`;
+}
+
+refresh();
+setInterval(refresh, REFRESH_S * 1000);
+</script>
+</body>
+</html>

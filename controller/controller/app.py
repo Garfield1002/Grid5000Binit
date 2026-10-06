@@ -1,16 +1,15 @@
 import asyncio
 import hmac
-import html
 import logging
 import threading
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
@@ -20,6 +19,7 @@ from .classify import CLASSES, classify
 from .config import Config
 from .features import normalize
 from .schema import migrate
+from .targets import load_targets, match
 
 log = logging.getLogger("controller")
 MAX_BATCH = 5000
@@ -195,6 +195,8 @@ def check_silent(pool, silent_after_s: float) -> int:
 
 # /status and /status.json need no token; their content is reused for this long.
 STATUS_CACHE_S = 10.0
+# Static page that fetches /status.json and renders it in the browser.
+STATUS_PAGE = Path(__file__).with_name("status.html")
 
 
 def create_app(cfg: Config) -> FastAPI:
@@ -205,6 +207,7 @@ def create_app(cfg: Config) -> FastAPI:
     total_run = threading.Lock()
     status_cache: list = []
     status_lock = threading.Lock()
+    targets = load_targets(cfg.targets_file)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -493,36 +496,91 @@ def create_app(cfg: Config) -> FastAPI:
             events = conn.execute(
                 "SELECT id, ts, kind, node_id, host, detail FROM g5k_events ORDER BY id DESC LIMIT 50"
             ).fetchall()
-            models: dict[str, dict] = {}
             out_nodes = []
-            for n in nodes:
-                total = total_for(n["features"])
+            by_target: dict[str, list[dict]] = {}
+            groups: dict = {}
+
+            def stats(n, total) -> dict:
                 rate = n["done_cases"] / n["work_s"] if n["work_s"] > 0 else None
                 remaining = max(total - n["done_cases"], 0) if total is not None else None
                 eta = remaining / rate if (rate and remaining is not None) else None
+                return dict(total_cases=total, rate_cases_per_s=rate, eta_s=eta)
+
+            for n in nodes:
+                total = total_for(n["features"])
                 c = cls.get(n["node_id"], {})
+                t = match(targets, n["cpu_model"], n["cluster"])
                 d = {k: n[k] for k in ("node_id", "host", "cluster", "cpu_model", "microcode",
                                        "worker_version", "save_mode", "state", "silent", "done_cases",
                                        "ok_count", "qemu_restarts", "current_batch_id",
                                        "done_in_batch")}
-                d.update(total_cases=total, rate_cases_per_s=rate, eta_s=eta, mismatch_classes=c,
+                d.update(stats(n, total), mismatch_classes=c,
                          last_seen=n["last_seen"].isoformat(),
                          last_seen_ago_s=float(n["last_seen_ago_s"]),
-                         cursor=[n["cursor_tc"], n["cursor_si"]])
+                         cursor=[n["cursor_tc"], n["cursor_si"]],
+                         target=t.cpu_model if t else None)
                 out_nodes.append(d)
-                m = models.setdefault(n["cpu_model"] or "?", {"nodes": 0, "done_cases": 0, "ok_count": 0,
-                                                              "silent": 0, "mismatch_classes": {}})
-                m["nodes"] += 1
-                # Not summed: a node that takes a run over inherits its predecessor's counters.
-                m["done_cases"] = max(m["done_cases"], n["done_cases"])
-                m["ok_count"] = max(m["ok_count"], n["ok_count"])
-                m["silent"] += 1 if n["silent"] else 0
-                for k, v in c.items():
-                    m["mismatch_classes"][k] = m["mismatch_classes"].get(k, 0) + v
+                # Same rule as takeover(): hosts of one spec share one run.
+                key = ((n["cpu_model"], n["microcode"], tuple(n["features"]), n["save_mode"])
+                       if n["cpu_model"] else n["node_id"])
+                groups.setdefault(key, []).append((n, d))
+                if t:
+                    by_target.setdefault(t.cpu_model, []).append(d)
+
+            runs = []
+            for members in groups.values():
+                # The head carries the run's counters: each host inherits them from its predecessor.
+                n, d = max(members, key=lambda m: (m[0]["cursor_tc"], m[0]["cursor_si"], m[0]["last_seen"]))
+                # Summed: a case reported by two hosts of the run (replaced host still alive) counts
+                # twice, deduplicating would cost a second pass over g5k_results.
+                c: dict[str, int] = {}
+                for _, x in members:
+                    for k, v in x["mismatch_classes"].items():
+                        c[k] = c.get(k, 0) + v
+                runs.append({
+                    **d, "mismatch_classes": c,
+                    # In order of use, the current host last.
+                    "hosts": [x["host"] for m, x in sorted(members, key=lambda m: m[0]["last_seen"])],
+                    "qemu_restarts": sum(x["qemu_restarts"] for _, x in members),
+                })
+
+        def frac(n):
+            return min(n["done_cases"] / n["total_cases"], 1.0) if n["total_cases"] else 0.0
+
+        out_targets = []
+        for t in targets:
+            ns = by_target.get(t.cpu_model, [])
+            if any(n["state"] == "done" for n in ns):
+                st = "done"
+            elif any(n["state"] == "running" and not n["silent"] for n in ns):
+                st = "active"
+            else:
+                st = "stalled" if ns else "todo"
+            out_targets.append({
+                "cpu_model": t.cpu_model, "microarch": t.microarch, "cluster": t.cluster,
+                "site": t.site, "queue": t.queue, "abaca": t.abaca, "status": st,
+                "progress": 1.0 if st == "done" else max(map(frac, ns), default=0.0),
+                "hosts": [n["host"] for n in ns],
+            })
+        archs = {t["microarch"] for t in out_targets}
+        count = lambda st, ts=out_targets: sum(1 for t in ts if t["status"] == st)
+        reachable = [t for t in out_targets if not t["abaca"]]
+        objective = {
+            "targets": out_targets,
+            "models": {"total": len(out_targets), **{s: count(s) for s in ("done", "active", "stalled", "todo")}},
+            "reachable": {"total": len(reachable), "done": count("done", reachable)},
+            "microarchs": {
+                "total": len(archs),
+                "done": len({t["microarch"] for t in out_targets if t["status"] == "done"}),
+                "started": len({t["microarch"] for t in out_targets if t["status"] != "todo"}),
+            },
+        }
+
         return {
             "generated_at": time.time(),
             "nodes": out_nodes,
-            "cpu_models": models,
+            "runs": runs,
+            "objective": objective,
             "silent_nodes": [n["host"] for n in out_nodes if n["silent"]],
             "events": [{**e, "ts": e["ts"].isoformat()} for e in events],
         }
@@ -535,10 +593,9 @@ def create_app(cfg: Config) -> FastAPI:
     def status_json():
         return JSONResponse(cached_status())
 
-    @app.get("/status", response_class=HTMLResponse)
-    def status_page(token: Optional[str] = Query(None)):
-        # Only the token is carried into the page's links (the mismatches one needs it).
-        return HTMLResponse(render_status(cached_status(), urlencode({"token": token}) if token else ""))
+    @app.get("/status", include_in_schema=False)
+    def status_page():
+        return FileResponse(STATUS_PAGE, media_type="text/html")
 
     @app.get("/mismatches", dependencies=[Depends(auth)])
     def mismatches(class_: Optional[str] = Query(None, alias="class"), host: Optional[str] = None,
@@ -564,52 +621,3 @@ def create_app(cfg: Config) -> FastAPI:
         return JSONResponse([{**r, "created_at": r["created_at"].isoformat()} for r in rows])
 
     return app
-
-
-def _dur(s) -> str:
-    if s is None:
-        return "?"
-    s = int(s)
-    return f"{s // 3600}h{(s % 3600) // 60:02d}m" if s >= 3600 else f"{s // 60}m{s % 60:02d}s"
-
-
-def render_status(s: dict, query: str = "") -> str:
-    e = html.escape
-    def cls_str(c):
-        return ", ".join(f"{e(k)}={v}" for k, v in sorted(c.items())) or "-"
-    rows = []
-    for n in s["nodes"]:
-        warn = n["silent"]
-        pct = f"{100 * n['done_cases'] / n['total_cases']:.1f}%" if n["total_cases"] else "?"
-        rate = f"{n['rate_cases_per_s']:.1f}/s" if n["rate_cases_per_s"] else "?"
-        rows.append(
-            f"<tr class='{'warn' if warn else ''}'><td>{e(n['host'])}{' SILENT' if warn else ''}</td>"
-            f"<td>{e(str(n['cpu_model']))}</td><td>{e(str(n['save_mode'] or '?'))}</td><td>{e(n['state'])}</td>"
-            f"<td>{n['done_cases']} / {n['total_cases'] if n['total_cases'] is not None else '?'} ({pct})</td>"
-            f"<td>{rate}</td><td>{_dur(n['eta_s'])}</td><td>{cls_str(n['mismatch_classes'])}</td>"
-            f"<td>{n['qemu_restarts']}</td><td>{_dur(n['last_seen_ago_s'])} ago</td></tr>"
-        )
-    models = "".join(
-        f"<tr><td>{e(k)}</td><td>{m['nodes']}</td><td>{m['done_cases']}</td><td>{m['ok_count']}</td>"
-        f"<td>{cls_str(m['mismatch_classes'])}</td><td>{m['silent']}</td></tr>"
-        for k, m in sorted(s["cpu_models"].items())
-    )
-    evs = "".join(
-        f"<tr><td>{e(ev['ts'])}</td><td>{e(ev['kind'])}</td><td>{e(str(ev['host'] or ''))}</td>"
-        f"<td>{e(str(ev['detail']))}</td></tr>" for ev in s["events"]
-    )
-    banner = (f"<p class='warn'>Silent nodes: {e(', '.join(s['silent_nodes']))}</p>"
-              if s["silent_nodes"] else "")
-    return f"""<!doctype html><html><head><meta charset="utf-8">
-<meta http-equiv="refresh" content="10;url=/status{('?' + e(query)) if query else ''}">
-<title>Grid5000Binit status</title>
-<style>body{{font-family:sans-serif;margin:1em}}table{{border-collapse:collapse;margin-bottom:1.5em}}
-td,th{{border:1px solid #ccc;padding:2px 8px;text-align:left;font-size:13px}}
-.warn{{background:#fdd;color:#900}}td{{font-family:monospace}}</style></head><body>
-<h1>Grid5000Binit controller</h1>{banner}
-<h2>Nodes</h2><table><tr><th>host</th><th>cpu</th><th>save</th><th>state</th><th>progress</th><th>rate</th>
-<th>ETA</th><th>mismatches</th><th>qemu restarts</th><th>last seen</th></tr>{''.join(rows)}</table>
-<h2>CPU models</h2><table><tr><th>model</th><th>nodes</th><th>done</th><th>ok</th><th>mismatches</th><th>silent</th></tr>{models}</table>
-<h2>Recent events</h2><table><tr><th>time</th><th>kind</th><th>host</th><th>detail</th></tr>{evs}</table>
-<p><a href="/status.json?{e(query)}">status.json</a> | <a href="/mismatches?{e(query)}">mismatches</a></p>
-</body></html>"""

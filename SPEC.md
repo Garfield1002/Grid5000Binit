@@ -58,10 +58,10 @@ State/diff JSON uses the same flat keys as x86db (`rax`, `flag`, `x87_r0`, `mm0`
 - Mismatch classes: `undef_flags_only` (only bits in `instruction_undefined_flags` differ), `defined_state`, `exception_mismatch`, `crash`.
 - Monitoring:
   - structured logs to stdout and a rotating JSONL file
-  - `GET /status`: a self-refreshing HTML page with per-node progress, rate, ETA, mismatch classes, last seen and silent-node warnings; a per-CPU-model aggregate; recent events
+  - `GET /status`: a self-refreshing HTML dashboard: objective coverage (one finished node per CPU model of `controller/controller/targets.csv`, grouped by microarchitecture), per-run progress, rate, ETA, mismatch classes, last seen and silent-node warnings; recent events
   - `GET /status.json`
   - `GET /mismatches?class=&host=&insn=`
-- Config comes from env: `X86DB_DSN`, `CONTROLLER_TOKEN`, `LISTEN` (default 0.0.0.0:8080), `LOG_DIR`.
+- Config comes from env: `X86DB_DSN`, `CONTROLLER_TOKEN`, `LISTEN` (default 0.0.0.0:8080), `LOG_DIR`, `TARGETS_FILE` (default: the packaged `targets.csv`).
 
 ## 4. Grid5000
 

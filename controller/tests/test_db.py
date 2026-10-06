@@ -168,7 +168,7 @@ def test_results_classification_and_done(client):
     assert len(client.get("/mismatches?host=h1&insn=add", headers=H).json()) == 4
     assert client.get(f"/batch?node_id={nid}", headers=H).json() == {"batch_id": None, "cases": []}
     assert client.post("/heartbeat", headers=H, json={"node_id": nid}).status_code == 200
-    assert "h1" in client.get("/status", headers=H).text
+    assert "h1" in [r["host"] for r in client.get("/status.json").json()["runs"]]
     kinds = {e["kind"] for e in client.get("/status.json", headers=H).json()["events"]}
     assert {"register", "batch_start", "batch_done", "crash", "node_done"} <= kinds
 
@@ -189,7 +189,27 @@ def test_save_mode(client):
     b = client.get(f"/batch?node_id={nid}&size=10", headers=H).json()
     client.post("/results", headers=H, json={"node_id": nid, "batch_id": b["batch_id"],
                                               "ok_count": len(b["cases"]), "save_mode": "fxsave"})
-    assert "fxsave" in client.get("/status", headers=H).text
+    assert [r["save_mode"] for r in client.get("/status.json").json()["runs"]] == ["fxsave"]
+
+
+def test_objective(client):
+    nid = client.post("/register", headers=H, json={
+        "host": "gros-1.nancy.grid5000.fr", "cluster": "gros", "cpuid_features": ["SSE"],
+        "cpu_model": "Intel(R) Xeon(R) Gold 5220 CPU @ 2.20GHz"}).json()["node_id"]
+    b = client.get(f"/batch?node_id={nid}&size=10", headers=H).json()
+    client.post("/results", headers=H, json={"node_id": nid, "batch_id": b["batch_id"], "ok_count": 4,
+                                              "ok_ids": [[1, 0], [1, 1], [4, 0], [4, 1]]})
+    s = client.get("/status.json", headers=H).json()
+    n = s["nodes"][0]
+    assert n["target"] == "Intel Xeon Gold 5220"
+    t = [t for t in s["objective"]["targets"] if t["cluster"] == "gros"][0]
+    assert t["status"] == "active" and t["progress"] == 1.0
+    assert client.get(f"/batch?node_id={nid}", headers=H).json()["cases"] == []
+    o = client.get("/status.json", headers=H).json()["objective"]
+    assert o["models"]["done"] == 1 and o["models"]["total"] == 85 and o["reachable"] == {"total": 29, "done": 1}
+    assert "Cascade Lake-SP" in {t["microarch"] for t in o["targets"]}
+    # The page is static and renders /status.json in the browser.
+    assert "/status.json" in client.get("/status").text
 
 
 def test_takeover_same_spec(client):
@@ -209,10 +229,13 @@ def test_takeover_same_spec(client):
     nodes = {n["host"]: n for n in s["nodes"]}
     assert nodes["gros-1"]["state"] == "moved" and nodes["gros-2"]["done_cases"] == 3
     assert s["events"][1]["detail"]["resumed_from"] == "gros-1"
-    assert s["cpu_models"]["Intel(R) Xeon(R) Gold 5220 CPU @ 2.20GHz"]["done_cases"] == 3
+    # One run, listing both hosts, the current one last.
+    (run,) = s["runs"]
+    assert run["hosts"] == ["gros-1", "gros-2"] and run["host"] == "gros-2" and run["done_cases"] == 3
     # Another microcode is another run.
     d = reg("gros-3", "0x2")
     assert len(client.get(f"/batch?node_id={d}&size=10", headers=H).json()["cases"]) == 4
+    assert len(client.get("/status.json", headers=H).json()["runs"]) == 2
 
 
 def status_node(client, nid, want_total=False):

@@ -1,0 +1,86 @@
+cpu_model,microarch,cluster,site,nodes,queue,other_clusters
+AMD Opteron 250,K8,sagittaire,Lyon,9,default,
+AMD EPYC 7301,Zen,chiclet,Lille,8,default,
+AMD EPYC 7351,Zen,grue,Nancy,5,abaca,
+AMD EPYC 7282,Zen 2,abacus17,Rennes,1,abaca,esterel33 esterel34
+AMD EPYC 7352,Zen 2,servan,Grenoble,2,default+exotic,gruss abacus18
+AMD EPYC 7452,Zen 2,grouille,Nancy,2,default+exotic,
+AMD EPYC 7502,Zen 2,mercantour7,Sophia,1,abaca,
+AMD EPYC 7542,Zen 2,mercantour6,Sophia,1,abaca,
+AMD EPYC 7642,Zen 2,neowise,Lyon,10,default+exotic,
+AMD EPYC 7662,Zen 2,esterel36,Sophia,1,abaca,
+AMD EPYC 7742,Zen 2,sirius,Lyon,1,default+exotic,
+AMD EPYC 7F72,Zen 2,abacus21,Rennes,1,abaca,
+AMD EPYC 7H12,Zen 2,roazhon4,Rennes,1,abaca,
+AMD EPYC 7313,Zen 3,esterel40,Sophia,2,abaca,esterel39
+AMD EPYC 7413,Zen 3,abacus25,Rennes,4,abaca,abacus22 esterel35
+AMD EPYC 7453,Zen 3,ecotaxe,Nantes,2,default+exotic,
+AMD EPYC 7513,Zen 3,chuc,Lille,8,default,grat esterel37 esterel38
+AMD EPYC 9124,Zen 4,esterel44,Sophia,1,abaca,
+AMD EPYC 9254,Zen 4,gres,Nancy,7,abaca,musa abacus27 esterel43
+AMD EPYC 9754,Zen 4c,grdix,Nancy,16,abaca,
+AMD EPYC 9135,Zen 5,abacus29,Rennes,1,abaca,esterel45
+AMD EPYC 9355,Zen 5,granite,Nancy,18,abaca,
+AMD EPYC 9555,Zen 5,roazhon15,Rennes,1,abaca,
+Intel Xeon X5670,Westmere,uvb,Sophia,4,default,
+Intel Xeon E5-2620,Sandy Bridge,hercule,Lyon,4,default,
+Intel Xeon E5-2630,Sandy Bridge,taurus,Lyon,12,default,orion
+Intel Xeon E5-2660,Sandy Bridge,econome,Nantes,24,default,roazhon12 roazhon11
+Intel Xeon E5-2620 v3,Haswell,esterel2,Sophia,1,abaca,
+Intel Xeon E5-2623 v3,Haswell,vercors9,Grenoble,7,abaca,
+Intel Xeon E5-2630 v3,Haswell,parasilo,Rennes,25,default,
+Intel Xeon E5-2640 v3,Haswell,chartreuse3,Grenoble,4,abaca,
+Intel Xeon E5-2660 v3,Haswell,roazhon5,Rennes,11,abaca,
+Intel Xeon E7-4850 v3,Haswell,grostiti,Nancy,1,abaca,
+Intel Pentium D1517,Broadwell,engelbourg,Strasbourg,8,testing+exotic,ramstein
+Intel Xeon E5-2609 v4,Broadwell,abacus2,Rennes,1,abaca,
+Intel Xeon E5-2620 v4,Broadwell,nova,Lyon,20,default,esterel7 esterel11 abacus3
+Intel Xeon E5-2623 v4,Broadwell,vercors10,Grenoble,3,abaca,
+Intel Xeon E5-2630 v4,Broadwell,esterel10,Sophia,3,abaca,vercors2 esterel5 esterel3 esterel4 esterel8
+Intel Xeon E5-2630L v4,Broadwell,ecotype,Nantes,48,default,
+Intel Xeon E5-2640 v4,Broadwell,chartreuse2,Grenoble,4,abaca,
+Intel Xeon E5-2650 v2,Ivy Bridge,mercantour2,Sophia,8,abaca,
+Intel Xeon E5-2650 v4,Broadwell,grele,Nancy,13,abaca,roazhon6 roazhon8 roazhon7 gratouille abacus1
+Intel Xeon E5-2680 v2,Ivy Bridge,mercantour1,Sophia,16,abaca,
+Intel Xeon E5-2680 v4,Broadwell,clervaux,Luxembourg,48,default,
+Intel Xeon E5-2698 v4,Broadwell,gemini,Lyon,2,default+exotic,
+Intel Xeon Gold 5115,Skylake-SP,abacus5,Rennes,1,abaca,esterel27
+Intel Xeon Gold 5118,Skylake-SP,roazhon9,Rennes,4,abaca,
+Intel Xeon Gold 5120,Skylake-SP,chartreuse4,Grenoble,4,abaca,abacus8 roazhon2
+Intel Xeon Gold 6126,Skylake-SP,chifflot,Lille,8,default,esterel28
+Intel Xeon Gold 6130,Skylake-SP,dahu,Grenoble,31,default,yeti grvingt chartreuse6
+Intel Xeon Gold 6142,Skylake-SP,roazhon3,Rennes,1,abaca,
+Intel Xeon Gold 6148,Skylake-SP,abacus30,Rennes,2,abaca,mercantour4
+Intel Xeon Gold 6154,Skylake-SP,roazhon1,Rennes,1,abaca,
+Intel Xeon Silver 4110,Skylake-SP,graffiti,Nancy,12,abaca,esterel29 esterel19 esterel13 esterel14 esterel15
+Intel Xeon Silver 4112,Skylake-SP,vercors12,Grenoble,3,abaca,vercors11
+Intel Xeon Silver 4114,Skylake-SP,mercantour3,Sophia,16,abaca,vercors4 vercors3 abacus4 abacus9 abacus10
+Intel Xeon Gold 5218,Cascade Lake-SP,troll,Grenoble,4,default+exotic,
+Intel Xeon Gold 5218R,Cascade Lake-SP,grappe,Nancy,16,abaca,vercors5
+Intel Xeon Gold 5220,Cascade Lake-SP,gros,Nancy,123,default,roazhon10
+Intel Xeon Gold 5220R,Cascade Lake-SP,vercors13,Grenoble,1,abaca,abacus19 abacus20
+Intel Xeon Gold 6230R,Cascade Lake-SP,esterel31,Sophia,4,abaca,
+Intel Xeon Gold 6238R,Cascade Lake-SP,esterel32,Sophia,1,abaca,
+Intel Xeon Gold 6240,Cascade Lake-SP,mercantour5,Sophia,4,abaca,esterel22
+Intel Xeon Gold 6240L,Cascade Lake-SP,grosminet,Nancy,1,abaca,
+Intel Xeon Gold 6240R,Cascade Lake-SP,esterel24,Sophia,1,abaca,
+Intel Xeon Gold 6248,Cascade Lake-SP,abacus12,Rennes,1,abaca,
+Intel Xeon Gold 6254,Cascade Lake-SP,roazhon13,Rennes,8,abaca,roazhon14
+Intel Xeon Silver 4214,Cascade Lake-SP,vercors7,Grenoble,2,abaca,abacus14 abacus16
+Intel Xeon Silver 4214R,Cascade Lake-SP,esterel25,Sophia,1,abaca,
+Intel Xeon Silver 4214Y,Cascade Lake-SP,vercors8,Grenoble,2,abaca,
+Intel Xeon Silver 4215,Cascade Lake-SP,esterel23,Sophia,2,abaca,esterel30
+Intel Xeon Silver 4216,Cascade Lake-SP,abacus28,Rennes,1,abaca,esterel26
+Intel Xeon Gold 5318Y,Ice Lake-SP,spirou,Louvain,8,default,
+Intel Xeon Gold 5320,Ice Lake-SP,paradoxe,Rennes,64,default,
+Intel Xeon Platinum 8358,Ice Lake-SP,chirop,Lille,5,default,
+Intel Xeon Silver 4314,Ice Lake-SP,fleckenstein,Strasbourg,10,default,montcalm
+Intel Xeon Gold 6426Y,Sapphire Rapids,esterel41,Sophia,1,abaca,
+Intel Xeon Gold 6430,Sapphire Rapids,vercors14,Grenoble,4,abaca,
+Intel Xeon Gold 6442Y,Sapphire Rapids,kinovis,Grenoble,6,abaca,abacus26
+Intel Xeon Platinum 8458P,Sapphire Rapids,chartreuse7,Grenoble,1,abaca,vercors16 vercors17
+Intel Xeon Platinum 8470,Sapphire Rapids,vianden,Luxembourg,1,default+exotic,
+Intel Xeon Platinum 8568Y+,Emerald Rapids,larochette,Luxembourg,7,default,
+Intel Xeon 6520P,Granite Rapids,vercors18,Grenoble,3,abaca,
+Intel Xeon 6530P,Granite Rapids,chicoree,Lille,1,default+exotic,
+Intel Xeon 6710E,Sierra Forest,esterel42,Sophia,1,abaca,
