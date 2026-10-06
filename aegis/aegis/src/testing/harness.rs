@@ -250,6 +250,11 @@ pub fn init_cpu() -> (FeatureMask, u32) {
     let f1 = cpuid.get_feature_info();
     let has_xsave = f1.as_ref().is_some_and(|f| f.has_xsave());
 
+    // With CR0.NE clear an unmasked x87 exception is signalled through FERR#
+    // instead of #MF; the guest has no such interrupt and the CPU waits
+    // forever (seen on AMD; VMX forces NE on).
+    unsafe { Cr0::update(|flags| *flags |= Cr0Flags::NUMERIC_ERROR) };
+
     // OSXSAVE must be enabled before CPUID reports OSXSAVE support, and may
     // only be set when XSAVE exists.
     unsafe {
