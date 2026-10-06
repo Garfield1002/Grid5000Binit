@@ -137,6 +137,33 @@ def touch(conn, node_id: int):
     return r["host"]
 
 
+def takeover(conn, node, b, feats):
+    """A run belongs to a hardware spec, not to a host: a node that registers continues from the
+    most advanced node with the same CPU model, microcode, feature set and save mode (a best-effort
+    job resubmitted by OAR lands on any free host of the cluster). Returns the node it took over
+    from, or None. The nodes it replaces are marked 'moved'; one that is in fact still alive goes
+    back to 'running' at its next /batch and merely duplicates work."""
+    if not b.cpu_model:
+        return None
+    same = """node_id <> %(id)s AND cpu_model = %(cpu)s AND microcode IS NOT DISTINCT FROM %(mc)s
+              AND features = %(feats)s::text[] AND save_mode IS NOT DISTINCT FROM %(sm)s"""
+    p = {"id": node["node_id"], "cpu": b.cpu_model, "mc": b.microcode, "feats": feats,
+         "sm": node["save_mode"], "tc": node["cursor_tc"], "si": node["cursor_si"]}
+    donor = conn.execute(
+        f"""SELECT node_id, host, cursor_tc, cursor_si, done_cases, ok_count, work_s
+            FROM g5k_nodes WHERE {same} AND (cursor_tc, cursor_si) > (%(tc)s, %(si)s)
+            ORDER BY cursor_tc DESC, cursor_si DESC LIMIT 1""", p).fetchone()
+    if donor:
+        conn.execute(
+            """UPDATE g5k_nodes SET cursor_tc=%s, cursor_si=%s, done_cases=%s, ok_count=%s, work_s=%s
+               WHERE node_id=%s""",
+            (donor["cursor_tc"], donor["cursor_si"], donor["done_cases"], donor["ok_count"],
+             donor["work_s"], node["node_id"]))
+    conn.execute(f"UPDATE g5k_nodes SET state='moved', silent=false, current_batch_id=NULL "
+                 f"WHERE {same} AND state='running'", p)
+    return donor
+
+
 def check_silent(pool, silent_after_s: float) -> int:
     with pool.connection() as conn:
         rows = conn.execute(
@@ -215,13 +242,17 @@ def create_app(cfg: Config) -> FastAPI:
                        worker_version=EXCLUDED.worker_version,
                        save_mode=COALESCE(EXCLUDED.save_mode, g5k_nodes.save_mode), last_seen=now(),
                        silent=false, state='running'
-                   RETURNING node_id, cursor_tc, cursor_si, (xmax <> 0) AS reregistered""",
+                   RETURNING node_id, cursor_tc, cursor_si, save_mode, (xmax <> 0) AS reregistered""",
                 (b.host, b.cluster, b.cpu_model, b.microcode, b.cpuid_features,
                  b.kernel_features, feats, b.worker_version, b.save_mode),
             ).fetchone()
+            donor = takeover(conn, r, b, feats)
+            if donor:
+                r = {**r, "cursor_tc": donor["cursor_tc"], "cursor_si": donor["cursor_si"]}
             add_event(conn, "register", r["node_id"], b.host, cluster=b.cluster,
                       cpu_model=b.cpu_model, n_features=len(feats),
-                      resumed=r["reregistered"], cursor=[r["cursor_tc"], r["cursor_si"]])
+                      resumed=r["reregistered"] or bool(donor), cursor=[r["cursor_tc"], r["cursor_si"]],
+                      resumed_from=donor["host"] if donor else None)
         return {"node_id": r["node_id"]}
 
     @app.get("/batch", dependencies=[Depends(auth)])
@@ -433,8 +464,9 @@ def create_app(cfg: Config) -> FastAPI:
                 m = models.setdefault(n["cpu_model"] or "?", {"nodes": 0, "done_cases": 0, "ok_count": 0,
                                                               "silent": 0, "mismatch_classes": {}})
                 m["nodes"] += 1
-                m["done_cases"] += n["done_cases"]
-                m["ok_count"] += n["ok_count"]
+                # Not summed: a node that takes a run over inherits its predecessor's counters.
+                m["done_cases"] = max(m["done_cases"], n["done_cases"])
+                m["ok_count"] = max(m["ok_count"], n["ok_count"])
                 m["silent"] += 1 if n["silent"] else 0
                 for k, v in c.items():
                     m["mismatch_classes"][k] = m["mismatch_classes"].get(k, 0) + v

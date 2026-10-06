@@ -44,7 +44,7 @@ Every request carries `Authorization: Bearer $CONTROLLER_TOKEN`. Base URL is `$C
 
 - `POST /register` body `{host, cluster, cpu_model, microcode, cpuid_features:[names], kernel_features:[names], save_mode, worker_version}` → `{node_id}`
 - `GET /batch?node_id=..&size=1000` → `{batch_id, cases:[{test_case_id, state_index, instruction, opcode_hex, required_features:[names], initial_state:{...}, expected:{final_state|null, exception_kind|null}}]}`. An empty `cases` means done.
-  The controller serves each node every eligible case (required ⊆ node features), resuming from the node's cursor.
+  The controller serves each node every eligible case (required ⊆ node features), resuming from the node's cursor. At `/register` a node takes over the cursor of the most advanced node with the same cpu_model, microcode, features and save_mode (a resubmitted best-effort job lands on any host of the cluster).
 - `POST /results` `{node_id, batch_id, save_mode, ok_count, ok_ids:[[tc,si],...], mismatches:[{test_case_id, state_index, got_final_state|null, got_exception_kind|null, status:"mismatch"|"crash"|"skipped"}], elapsed_s}`. The controller advances the cursor and classifies each mismatch.
 - `POST /heartbeat` `{node_id, batch_id, done_in_batch, qemu_restarts}`, sent about every 30s.
 

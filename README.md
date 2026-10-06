@@ -19,7 +19,7 @@ a primary research target, so nothing is masked. Full contract: [SPEC.md](SPEC.m
 - `aegis/` kernel (branch `g5k`), built into a bootimage. Worker and kernel sync through an ivshmem
   mailbox (SPEC section 1); a case that times out kills/restarts QEMU and is reported as `crash`.
 - `controller/` serves each node every case whose required CPU features are a subset of the node's
-  features, resuming from a per-node cursor (SPEC sections 2-3). See `controller/README.md`.
+  features, resuming from a cursor shared by nodes of the same spec (SPEC sections 2-3). See `controller/README.md`.
 - `scripts/` (local build + submission on a frontend), `node/run.sh` (runs on each node).
 
 ## Prerequisites

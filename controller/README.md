@@ -19,7 +19,9 @@ it writes `g5k_nodes`, `g5k_batches`, `g5k_results`, `g5k_events`, `instruction_
 ## Endpoints (all need `Authorization: Bearer $CONTROLLER_TOKEN`; the monitoring ones also accept `?token=`)
 
 - `POST /register`, `GET /batch?node_id=&size=`, `POST /results`, `POST /heartbeat` (spec section 2).
-  Re-registering the same `host` keeps its node_id and cursor (resume).
+  Re-registering the same `host` keeps its node_id and cursor (resume). A node also takes over the cursor and
+  counters of the most advanced node with the same cpu_model, microcode, features and save_mode, which is
+  then marked `moved`: a run follows the hardware spec across hosts.
 - `GET /status` (HTML, refresh 10 s), `GET /status.json`, `GET /mismatches?class=&host=&insn=&limit=&offset=`.
 - A failed authentication is answered 401 and logged (`auth_failure` in `logs/controller.jsonl`); it writes
   nothing to the database, so scanners cannot fill `g5k_events`.
