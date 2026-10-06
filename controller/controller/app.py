@@ -84,16 +84,20 @@ def add_event(conn, kind: str, node_id=None, host=None, **detail) -> None:
 
 BATCH_SQL = """
 SELECT tc.id AS test_case_id, s.idx AS state_index, tc.instruction, tc.opcode,
-       tc.instruction_id, tc.initial_states -> s.idx AS initial_state,
+       tc.instruction_id, s.initial_state,
        tr.final_state, tr.exception_kind,
        COALESCE((SELECT array_agg(f.feature ORDER BY f.feature)
                  FROM instruction_features f WHERE f.instruction_id = tc.instruction_id),
                 ARRAY[]::text[]) AS required_features
 FROM test_cases tc
-CROSS JOIN LATERAL generate_series(
-    CASE WHEN tc.id = %(tc)s THEN %(si)s + 1 ELSE 0 END,
-    LEAST(jsonb_array_length(tc.initial_states) - 1,
-          (CASE WHEN tc.id = %(tc)s THEN %(si)s + 1 ELSE 0 END) + %(n)s - 1)) AS s(idx)
+CROSS JOIN LATERAL (SELECT (CASE WHEN tc.id = %(tc)s THEN %(si)s + 1 ELSE 0 END)::int AS first) w
+-- The window is sliced out of initial_states once per test case: `initial_states -> idx` on every
+-- row reads the whole array (up to ~100,000 states) each time.
+CROSS JOIN LATERAL (
+    SELECT (w.first + e.ord - 1)::int AS idx, e.value AS initial_state
+    FROM jsonb_array_elements(jsonb_path_query_array(
+        tc.initial_states, '$[$a to $b]',
+        jsonb_build_object('a', w.first, 'b', w.first + %(n)s::int - 1))) WITH ORDINALITY AS e(value, ord)) s
 JOIN test_results tr ON tr.test_case_id = tc.id AND tr.state_index = s.idx
 WHERE tc.id >= %(tc)s  -- sargable: range-scan test_cases_pkey from the cursor; at most n states per case are needed
   AND (tc.status IS NULL OR tc.status NOT LIKE 'ERR%%')

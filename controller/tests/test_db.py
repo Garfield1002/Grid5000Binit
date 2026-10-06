@@ -83,6 +83,57 @@ def test_feature_filtering_and_cursor(client):
     assert [(c["test_case_id"], c["state_index"]) for c in b3["cases"]] == [(2, 0), (4, 0), (4, 1)]
 
 
+def add_cases(client, counts, missing=()):
+    """Add ADD test cases with ids from 10 and the given state counts; state i starts with rax=i and
+    ends with rax=100+i. `missing` lists the (test_case_id, state_index) left without a result."""
+    from psycopg.types.json import Jsonb
+    with client.app.state.pool.connection() as conn:
+        for tc, n in enumerate(counts, start=10):
+            conn.execute(
+                "INSERT INTO test_cases(id,instruction,opcode,instruction_id,status,initial_states)"
+                " VALUES (%s,%s,'4801d8',1,'OK',%s)",
+                (tc, f"add #{tc}", Jsonb([{"rax": i, "flag": 2} for i in range(n)])))
+            for i in range(n):
+                if (tc, i) not in missing:
+                    conn.execute(
+                        "INSERT INTO test_results(test_case_id,state_index,final_state) VALUES (%s,%s,%s)",
+                        (tc, i, Jsonb({"rax": 100 + i, "flag": 2})))
+
+
+def drain(client, host, size):
+    """Every batch served to a fresh SSE node, as lists of (test_case_id, state_index, initial rax, final rax)."""
+    nid = client.post("/register", headers=H, json={"host": host, "cpuid_features": ["SSE"],
+                                                    "kernel_features": ["SSE"]}).json()["node_id"]
+    batches = []
+    while True:
+        b = client.get(f"/batch?node_id={nid}&size={size}", headers=H).json()
+        if not b["cases"]:
+            return batches
+        batches.append([(c["test_case_id"], c["state_index"], c["initial_state"]["rax"],
+                         (c["expected"]["final_state"] or {}).get("rax")) for c in b["cases"]])
+        client.post("/results", headers=H, json={"node_id": nid, "batch_id": b["batch_id"],
+                                                  "ok_count": len(b["cases"])})
+
+
+def test_batches_cover_the_corpus_in_order(client):
+    # Large and small test cases, an empty one, and a run of more test cases than one lookup round.
+    counts = [7, 0, 1, 1, 1, 1, 1, 1, 12, 2]
+    add_cases(client, counts)
+    want = [(tc, i, i, 100 + i) for tc, n in enumerate(counts, start=10) for i in range(n)]
+    for size in (1, 2, 3, 5, 8, 100):
+        batches = drain(client, f"h-{size}", size)
+        got = [c for b in batches for c in b if c[0] >= 10]
+        # Each state once, in order, with its own initial state and expected result.
+        assert got == want, size
+        assert all(len(b) == size for b in batches[:-1]), size
+
+
+def test_batch_skips_states_without_result(client):
+    add_cases(client, [4, 3], missing={(10, 1), (11, 0), (11, 2)})
+    got = [c[:2] for b in drain(client, "h1", 100) for c in b if c[0] >= 10]
+    assert got == [(10, 0), (10, 2), (10, 3), (11, 1)]
+
+
 def test_results_classification_and_done(client):
     nid = register(client, ["SSE"])
     b = client.get(f"/batch?node_id={nid}&size=10", headers=H).json()
