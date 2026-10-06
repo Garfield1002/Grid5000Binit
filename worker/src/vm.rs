@@ -111,7 +111,9 @@ impl Vm {
 
         let child = Command::new(&cfg.qemu)
             .args(["-enable-kvm", "-cpu", "host", "-drive"])
-            .arg(format!("format=raw,file={}", cfg.bootimage.display()))
+            // snapshot=on: the image sits on the site's NFS home and is shared by every node
+            // there; opened read-write, the first QEMU holds its write lock and the others fail.
+            .arg(format!("format=raw,snapshot=on,file={}", cfg.bootimage.display()))
             .arg("-serial")
             .arg(format!("unix:{},{}", sock_path.display(), cfg.reconnect_opt))
             .args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04", "-object"])
