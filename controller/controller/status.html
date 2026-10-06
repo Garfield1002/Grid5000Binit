@@ -218,7 +218,7 @@ th {
 <div class="scroll"><table>
   <thead><tr>
     <th title="every host the run went through, the current one in bold">nodes</th><th>cpu</th><th>save</th>
-    <th>state</th><th>progress</th><th title="inside the VM, transfer not included">rate</th><th>ETA</th>
+    <th>state</th><th>progress</th><th title="batch issued to results received; hover a value for the rate inside the VM">rate</th><th>ETA</th>
     <th>mismatches</th><th>qemu restarts</th><th>last seen</th>
   </tr></thead>
   <tbody id="runs"></tbody>
@@ -370,7 +370,7 @@ function runRow(run) {
     `<td>${esc(n.save_mode || "?")}</td>`,
     `<td>${esc(n.state)}</td>`,
     `<td class="prog">${bar(frac)}${num(n.done_cases)} / ${total} (${percent(frac, 1)})</td>`,
-    `<td>${num(n.rate_cases_per_s)}/s</td>`,
+    `<td title="inside the VM: ${num(n.rate_cases_per_s)}/s">${num(n.wall_cases_per_s ?? n.rate_cases_per_s)}/s</td>`,
     `<td>${dur(n.eta_s)}</td>`,
     `<td>${classes(n.mismatch_classes)}</td>`,
     `<td>${n.qemu_restarts}</td>`,

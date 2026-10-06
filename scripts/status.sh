@@ -34,7 +34,7 @@ print("%-28s %-8s %12s %12s %8s %7s %6s %4s  %s" % (
 for n in d["runs"]:
     print("%-28s %-8s %12s %12s %8s %7s %5.0fs %4s  %s%s" % (
         ",".join(h.split(".")[0] for h in n["hosts"])[:28], n["state"], num(n["done_cases"]), num(n["total_cases"]),
-        num(n["rate_cases_per_s"]), eta(n["eta_s"]), n["last_seen_ago_s"],
+        num(n.get("wall_cases_per_s") or n["rate_cases_per_s"]), eta(n["eta_s"]), n["last_seen_ago_s"],
         n["qemu_restarts"], classes(n["mismatch_classes"]),
         " SILENT" if n["silent"] else ""))
 print("\nrecent events:")

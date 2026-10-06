@@ -162,15 +162,16 @@ def takeover(conn, node, b, feats):
     p = {"id": node["node_id"], "cpu": b.cpu_model, "mc": b.microcode, "feats": feats,
          "sm": node["save_mode"], "tc": node["cursor_tc"], "si": node["cursor_si"]}
     donor = conn.execute(
-        f"""SELECT node_id, host, cursor_tc, cursor_si, done_cases, ok_count, work_s
+        f"""SELECT node_id, host, cursor_tc, cursor_si, done_cases, ok_count, work_s, wall_s
             FROM g5k_nodes WHERE {same} AND (cursor_tc, cursor_si) > (%(tc)s, %(si)s)
             ORDER BY cursor_tc DESC, cursor_si DESC LIMIT 1""", p).fetchone()
     if donor:
         conn.execute(
-            """UPDATE g5k_nodes SET cursor_tc=%s, cursor_si=%s, done_cases=%s, ok_count=%s, work_s=%s
+            """UPDATE g5k_nodes SET cursor_tc=%s, cursor_si=%s, done_cases=%s, ok_count=%s, work_s=%s,
+                   wall_s=%s
                WHERE node_id=%s""",
             (donor["cursor_tc"], donor["cursor_si"], donor["done_cases"], donor["ok_count"],
-             donor["work_s"], node["node_id"]))
+             donor["work_s"], donor["wall_s"], node["node_id"]))
     conn.execute(f"UPDATE g5k_nodes SET state='moved', silent=false, current_batch_id=NULL "
                  f"WHERE {same} AND state='running'", p)
     return donor
@@ -407,12 +408,13 @@ def create_app(cfg: Config) -> FastAPI:
             )
             conn.execute(
                 """UPDATE g5k_nodes SET done_cases = done_cases + %s, ok_count = ok_count + %s,
-                       work_s = work_s + %s, current_batch_id = NULL, done_in_batch = 0,
+                       work_s = work_s + %s, wall_s = wall_s + extract(epoch FROM now() - %s),
+                       current_batch_id = NULL, done_in_batch = 0,
                        save_mode = COALESCE(%s, save_mode),
                        cursor_tc = CASE WHEN (%s, %s) > (cursor_tc, cursor_si) THEN %s ELSE cursor_tc END,
                        cursor_si = CASE WHEN (%s, %s) > (cursor_tc, cursor_si) THEN %s ELSE cursor_si END
                    WHERE node_id = %s""",
-                (bt["n_cases"], b.ok_count, b.elapsed_s, b.save_mode,
+                (bt["n_cases"], b.ok_count, b.elapsed_s, bt["issued_at"], b.save_mode,
                  bt["last_tc"], bt["last_si"], bt["last_tc"],
                  bt["last_tc"], bt["last_si"], bt["last_si"], b.node_id),
             )
@@ -483,7 +485,7 @@ def create_app(cfg: Config) -> FastAPI:
         with get_pool().connection() as conn:
             nodes = conn.execute(
                 """SELECT node_id, host, cluster, cpu_model, microcode, worker_version, state,
-                          silent, save_mode, done_cases, ok_count, work_s, qemu_restarts, features,
+                          silent, save_mode, done_cases, ok_count, work_s, wall_s, qemu_restarts, features,
                           current_batch_id, done_in_batch, cursor_tc, cursor_si,
                           registered_at, last_seen,
                           extract(epoch FROM now() - last_seen) AS last_seen_ago_s
@@ -502,9 +504,12 @@ def create_app(cfg: Config) -> FastAPI:
 
             def stats(n, total) -> dict:
                 rate = n["done_cases"] / n["work_s"] if n["work_s"] > 0 else None
+                # Batch issued -> results received: what the node really gets through, transfer included.
+                wall_rate = n["done_cases"] / n["wall_s"] if n["wall_s"] > 0 else None
                 remaining = max(total - n["done_cases"], 0) if total is not None else None
-                eta = remaining / rate if (rate and remaining is not None) else None
-                return dict(total_cases=total, rate_cases_per_s=rate, eta_s=eta)
+                pace = wall_rate or rate
+                eta = remaining / pace if (pace and remaining is not None) else None
+                return dict(total_cases=total, rate_cases_per_s=rate, wall_cases_per_s=wall_rate, eta_s=eta)
 
             for n in nodes:
                 total = total_for(n["features"])

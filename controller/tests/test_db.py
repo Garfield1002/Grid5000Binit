@@ -288,3 +288,32 @@ def test_eligible_total(client):
     assert {r["instruction_id"]: r["n"] for r in rows} == {1: 4, 2: 1}
     # The total matches what the node is actually served.
     assert len(client.get(f"/batch?node_id={avx}&size=10", headers=H).json()["cases"]) == 5
+
+
+def test_wall_rate(client):
+    pool = client.app.state.pool
+
+    def reg(host):
+        return client.post("/register", headers=H, json={
+            "host": host, "cluster": "gros", "cpuid_features": ["SSE"], "microcode": "0x1",
+            "cpu_model": "Intel(R) Xeon(R) Gold 5220 CPU @ 2.20GHz", "save_mode": "xsave"}).json()["node_id"]
+
+    a = reg("gros-1")
+    assert status_node(client, a)["wall_cases_per_s"] is None
+    b = client.get(f"/batch?node_id={a}&size=2", headers=H).json()
+    with pool.connection() as conn:
+        conn.execute("UPDATE g5k_batches SET issued_at = now() - interval '10 s' WHERE batch_id = %s", (b["batch_id"],))
+    client.post("/results", headers=H, json={"node_id": a, "batch_id": b["batch_id"], "ok_count": 2, "elapsed_s": 1})
+    n = status_node(client, a, want_total=True)
+    # 2 cases in 1 s inside the VM, but 10 s from batch issued to results received: the ETA follows the latter.
+    assert n["rate_cases_per_s"] == 2 and 0.15 < n["wall_cases_per_s"] <= 0.2
+    assert n["eta_s"] == pytest.approx((n["total_cases"] - 2) / n["wall_cases_per_s"])
+    # A host that takes the run over keeps its pace.
+    c = reg("gros-2")
+    assert status_node(client, c)["wall_cases_per_s"] == n["wall_cases_per_s"]
+    # Nodes from before the counter get it from their own batches at the next migration.
+    from controller.schema import migrate
+    with pool.connection() as conn:
+        conn.execute("UPDATE g5k_nodes SET wall_s = 0")
+    migrate(pool)
+    assert status_node(client, a)["wall_cases_per_s"] == pytest.approx(n["wall_cases_per_s"])

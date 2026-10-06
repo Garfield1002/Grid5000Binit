@@ -52,8 +52,9 @@ node_recovered, node_done.
 
 ## Objective and runs
 
-- Per node, `/status.json` gives `rate_cases_per_s`, the rate inside the VM, which `eta_s` uses: fetching and
-  transferring batches is not counted, so the ETA is a lower bound.
+- Per node, `/status.json` gives `rate_cases_per_s`, the rate inside the VM, and `wall_cases_per_s`, the rate
+  from batch issued to results received (`g5k_nodes.wall_s`, summed as batches are reported). `eta_s` uses the
+  latter; the pause between two batches is not counted, so the ETA is slightly optimistic.
 - The objective is one finished node per CPU model of `controller/targets.csv` (override with `TARGETS_FILE`;
   no file = no objective). A node counts for the target whose CPU model it reports, else for the target of its
   cluster. A target is `done` once one of its nodes finished the corpus, `active` while one is running and not

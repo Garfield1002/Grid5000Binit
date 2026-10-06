@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS g5k_nodes (
     done_cases       bigint NOT NULL DEFAULT 0,
     ok_count         bigint NOT NULL DEFAULT 0,
     work_s           double precision NOT NULL DEFAULT 0,
+    wall_s           double precision NOT NULL DEFAULT 0,
     qemu_restarts    int NOT NULL DEFAULT 0,
     current_batch_id bigint,
     done_in_batch    int NOT NULL DEFAULT 0
@@ -104,6 +105,18 @@ CREATE TABLE IF NOT EXISTS g5k_events (
 CREATE INDEX IF NOT EXISTS idx_g5k_events_ts ON g5k_events (ts DESC);
 
 ALTER TABLE g5k_nodes ADD COLUMN IF NOT EXISTS save_mode text;
+-- Time from batch issued to results received, summed over the node's batches (work_s is the part
+-- spent inside the VM). Kept on the node so that /status never aggregates g5k_batches.
+ALTER TABLE g5k_nodes ADD COLUMN IF NOT EXISTS wall_s double precision NOT NULL DEFAULT 0;
+"""
+
+# Nodes that reported batches before wall_s existed: done_cases at the pace of their own batches
+# (done_cases also holds what a node inherited from the hosts it took over from).
+BACKFILL_WALL_S = """
+UPDATE g5k_nodes n SET wall_s = n.done_cases * b.s / b.cases
+FROM (SELECT node_id, sum(extract(epoch FROM finished_at - issued_at)) AS s, sum(n_cases) AS cases
+      FROM g5k_batches WHERE status = 'done' GROUP BY node_id) b
+WHERE b.node_id = n.node_id AND n.wall_s = 0 AND n.done_cases > 0 AND b.cases > 0
 """
 
 
@@ -112,6 +125,8 @@ def migrate(pool) -> None:
         # Serialize concurrent migrations.
         conn.execute("SELECT pg_advisory_xact_lock(5000501)")
         conn.execute(DDL)
+        if conn.execute("SELECT 1 FROM g5k_nodes WHERE wall_s = 0 AND done_cases > 0 LIMIT 1").fetchone():
+            conn.execute(BACKFILL_WALL_S)
 
 
 def backfill_class_counts(dsn: str) -> int:
