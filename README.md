@@ -34,18 +34,18 @@ a primary research target, so nothing is masked. Full contract: [SPEC.md](SPEC.m
 
 ## Controller hosting
 
-G5K nodes have no inbound access from the internet, and outbound internet only goes through the site
-HTTP proxy (`http://proxy:3128`; `node/run.sh` exports `http(s)_proxy` for you, override with
-`HTTP_PROXY_URL`). The controller must be reachable from the nodes:
+G5K nodes have no inbound access from the internet but reach it directly for outbound requests
+(checked on gros, Nancy, and chiclet, Lille: `curl` from a node reaches the internet, and the old
+`proxy:3128` name no longer resolves). If a site does need a web proxy, set `https_proxy` and
+`no_proxy` in `~/g5kbinit/env`. The controller must be reachable from the nodes:
 
 1. **Public VPS (recommended).** Run the controller + Postgres (or tunnel the DB) there, put TLS
-   (Caddy/nginx) in front, set `CONTROLLER_URL=https://host`. Nodes reach it via the G5K proxy.
+   (Caddy/nginx) in front, set `CONTROLLER_URL=https://host`. Nodes reach it directly.
    Use a long random `CONTROLLER_TOKEN`; it is the only protection.
 2. **Reverse SSH tunnel from your machine.** The controller stays local:
    `ssh -R 0.0.0.0:8080:localhost:8080 nancy.g5k` (needs `GatewayPorts clientspecified` on the
    frontend sshd, which may not be allowed; test it) then
-   `CONTROLLER_URL=http://frontend.nancy.grid5000.fr:8080`. `*.grid5000.fr` is in `no_proxy` so
-   nodes connect directly. The tunnel must stay up (use `autossh`); one tunnel per site. Frontends
+   `CONTROLLER_URL=http://frontend.nancy.grid5000.fr:8080`. The tunnel must stay up (use `autossh`); one tunnel per site. Frontends
    are shared, so this is a fallback only.
 
 ## First run
@@ -91,7 +91,7 @@ to re-run. Dead/absent nodes are skipped; busy nodes simply queue.
   (mode 600) and sourced by `node/run.sh`, so the token does not show in `oarstat`.
 
 `node/run.sh` on each node: `sudo-g5k` (root, node is reinstalled afterwards), installs
-`qemu-system-x86` if absent, `chmod 666 /dev/kvm`, exports the proxy, runs `g5k-worker --once` in a restart
+`qemu-system-x86` if absent, `chmod 666 /dev/kvm`, runs `g5k-worker --once` in a restart
 loop with backoff until it exits 0 (controller has no more cases); any non-zero exit restarts it. Log: `~/g5kbinit/logs/<host>.log`;
 OAR stdout/stderr in `~/g5kbinit/logs/oar.*`.
 
@@ -129,7 +129,7 @@ behaviour differs between microarchitectures.
 - `/dev/kvm missing`: the node or cluster has virtualization disabled/unavailable; skip that cluster.
 - `sudo-g5k` fails: only works in the standard environment (not kadeploy/custom images) and on whole-node
   jobs (`host=1`, as submitted here).
-- apt cannot install qemu: check the proxy (`curl -I --proxy http://proxy:3128 https://deb.debian.org`)
+- apt cannot install qemu: check that the node reaches the mirror (`curl -I https://deb.debian.org`)
   and that `apt update` succeeded. Alternative: ship a static qemu in `~/g5kbinit` and pass `--qemu`.
 - Worker cannot reach controller: `curl -v -H "Authorization: Bearer $CONTROLLER_TOKEN" $CONTROLLER_URL/status.json`
   from the node. 401s show as `auth_failure` events. For tunnels, check `GatewayPorts` and `no_proxy`.
