@@ -14,7 +14,7 @@ H = {"Authorization": "Bearer tok"}
 
 
 @pytest.fixture()
-def client():
+def client(monkeypatch):
     import psycopg
     from fastapi.testclient import TestClient
     from controller.app import create_app
@@ -43,6 +43,8 @@ def client():
           (3,0,'{"rax":1,"flag":2}'),(4,0,'{"rax":1,"flag":2}');
         INSERT INTO test_results(test_case_id,state_index,exception_kind) VALUES (4,1,'UD');
         """)
+    # No status cache: the tests read /status.json right after changing things.
+    monkeypatch.setattr("controller.app.STATUS_CACHE_S", 0.0)
     # silent_after_s is large so the background loop never flags a node (and adds events) mid-test;
     # test_silent_detection calls check_silent itself.
     cfg = Config(dsn=DSN, token="tok", log_dir="/tmp", silent_after_s=3600.0,
@@ -67,8 +69,18 @@ def test_auth(client):
     assert client.post("/register", json={"host": "x"}).status_code == 401
     assert client.get("/mismatches").status_code == 401
     assert client.get("/mismatches?token=tok").status_code == 200
-    # A failed auth leaves no trace in the database.
-    assert client.get("/status.json", headers=H).json()["events"] == []
+    # The status pages are public, and a failed auth leaves no trace in the database.
+    assert client.get("/status").status_code == 200
+    r = client.get("/", follow_redirects=False)
+    assert r.status_code == 307 and r.headers["location"] == "/status"
+    assert client.get("/status.json").json()["events"] == []
+
+
+def test_status_cache(client, monkeypatch):
+    monkeypatch.setattr("controller.app.STATUS_CACHE_S", 60.0)
+    assert client.get("/status.json").json()["nodes"] == []
+    client.post("/register", headers=H, json={"host": "h9"})
+    assert client.get("/status.json").json()["nodes"] == []  # still the cached answer
 
 
 def test_feature_filtering_and_cursor(client):

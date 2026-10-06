@@ -22,13 +22,14 @@ bookkeeping tables so that `/status` never scans the big tables:
 - `g5k_instruction_states`: states with a result per instruction, filled on the first `/status` (one pass over
   `test_results`); eligible totals are sums over it. `TRUNCATE` it after `test_cases`/`test_results` change.
 
-## Endpoints (all need `Authorization: Bearer $CONTROLLER_TOKEN`; the monitoring ones also accept `?token=`)
+## Endpoints (`Authorization: Bearer $CONTROLLER_TOKEN`, or `?token=`, except the public status pages)
 
 - `POST /register`, `GET /batch?node_id=&size=`, `POST /results`, `POST /heartbeat` (spec section 2).
   Re-registering the same `host` keeps its node_id and cursor (resume). A node also takes over the cursor and
   counters of the most advanced node with the same cpu_model, microcode, features and save_mode, which is
   then marked `moved`: a run follows the hardware spec across hosts.
-- `GET /status` (HTML, refresh 10 s), `GET /status.json`, `GET /mismatches?class=&host=&insn=&limit=&offset=`.
+- `GET /status` (HTML) and `GET /status.json`: public (no token), built at most once every 10 s,
+  which is also how often the page reloads. `GET /` redirects to `/status`. `GET /mismatches?class=&host=&insn=&limit=&offset=` always needs the token.
 - A failed authentication is answered 401 and logged (`auth_failure` in `logs/controller.jsonl`); it writes
   nothing to the database, so scanners cannot fill `g5k_events`.
 

@@ -6,10 +6,11 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from typing import Any, Optional
+from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
@@ -192,12 +193,18 @@ def check_silent(pool, silent_after_s: float) -> int:
 
 # ── app ───────────────────────────────────────────────────────────────
 
+# /status and /status.json need no token; their content is reused for this long.
+STATUS_CACHE_S = 10.0
+
+
 def create_app(cfg: Config) -> FastAPI:
     pool_holder: dict[str, Any] = {}
     total_cache: dict[tuple, tuple[float, Optional[int]]] = {}
     total_lock = threading.Lock()
     total_threads: dict[tuple, threading.Thread] = {}
     total_run = threading.Lock()
+    status_cache: list = []
+    status_lock = threading.Lock()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -460,6 +467,15 @@ def create_app(cfg: Config) -> FastAPI:
             c = total_cache.get(key)
         return c[1] if c else None
 
+    def cached_status() -> dict:
+        """build_status, reused for STATUS_CACHE_S: the public page must not cost a query set per hit."""
+        with status_lock:
+            if status_cache and time.monotonic() - status_cache[0] < STATUS_CACHE_S:
+                return status_cache[1]
+            s = build_status()
+            status_cache[:] = [time.monotonic(), s]
+            return s
+
     def build_status() -> dict:
         with get_pool().connection() as conn:
             nodes = conn.execute(
@@ -511,14 +527,18 @@ def create_app(cfg: Config) -> FastAPI:
             "events": [{**e, "ts": e["ts"].isoformat()} for e in events],
         }
 
-    @app.get("/status.json", dependencies=[Depends(auth)])
-    def status_json():
-        return JSONResponse(build_status())
+    @app.get("/", include_in_schema=False)
+    def root():
+        return RedirectResponse("/status")
 
-    @app.get("/status", response_class=HTMLResponse, dependencies=[Depends(auth)])
-    def status_page(request: Request):
-        s = build_status()
-        return HTMLResponse(render_status(s, request.url.query))
+    @app.get("/status.json")
+    def status_json():
+        return JSONResponse(cached_status())
+
+    @app.get("/status", response_class=HTMLResponse)
+    def status_page(token: Optional[str] = Query(None)):
+        # Only the token is carried into the page's links (the mismatches one needs it).
+        return HTMLResponse(render_status(cached_status(), urlencode({"token": token}) if token else ""))
 
     @app.get("/mismatches", dependencies=[Depends(auth)])
     def mismatches(class_: Optional[str] = Query(None, alias="class"), host: Optional[str] = None,
