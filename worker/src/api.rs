@@ -1,4 +1,5 @@
 //! Controller HTTP client (ureq + rustls; honors https_proxy/http_proxy).
+//! The `gzip` feature makes ureq send `Accept-Encoding: gzip` and decode responses.
 
 use std::time::Duration;
 
