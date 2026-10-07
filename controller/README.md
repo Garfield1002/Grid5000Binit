@@ -14,7 +14,7 @@ mismatches. See `../SPEC.md` sections 2 and 3.
     uv run controller migrate             # migration only (idempotent)
 
 The controller only reads `test_cases`, `test_results`, `instruction_undefined_flags`;
-it writes `g5k_nodes`, `g5k_batches`, `g5k_results`, `g5k_events`, `instruction_features`, and two small
+it writes `g5k_nodes`, `g5k_batches`, `g5k_results`, `g5k_events`, `g5k_replays`, `instruction_features`, and two small
 bookkeeping tables so that `/status` never scans the big tables:
 
 - `g5k_class_counts`: mismatches per node and class, kept by a trigger on `g5k_results`.
@@ -35,7 +35,7 @@ bookkeeping tables so that `/status` never scans the big tables:
   nothing to the database, so scanners cannot fill `g5k_events`.
 
 Events (`g5k_events`, logs, `/status`): register, batch_start, batch_done, crash, node_silent,
-node_recovered, node_done.
+node_recovered, node_done, replay_start, replay_done, replay_applied.
 
 ## Semantics
 
@@ -63,6 +63,38 @@ node_recovered, node_done.
   one row per run and `/status.json` has `runs` next to `nodes`: the fields of the run's most advanced node, with
   `hosts` (every host used, the current one last), rates and `qemu_restarts` taken over
   all its hosts, `mismatch_classes` included (a case reported by two hosts of a run counts twice).
+
+## Replaying inputs
+
+To run an input again on a cluster, for instance after a fix of the kernel, and then decide what to do
+with the result (`X86DB_DSN` as above; on the server, `docker compose exec controller controller replay ...`):
+
+    uv run controller replay add --cluster gros --tc 15783 --si 325 --repeat 10
+    uv run controller replay report [--cluster gros]
+    uv run controller replay apply --cluster gros --action delete [--tc 15783] [--insn xsetbv]
+
+- `add` queues one state of a test case, or all of them without `--si`, for a cluster (`--cluster` can be
+  repeated; `--dry-run` only counts). An input already waiting for that cluster is not queued twice.
+- The next `/batch` of any node of the cluster gets the waiting inputs, ahead of its cursor and each
+  `--repeat` times in a row. If no job runs on the cluster, submit one as usual: it replays, finds its run
+  finished and exits. A replay batch moves neither the cursor nor `done_cases`/`ok_count`; one that is not
+  reported is served again (to the same node when it asks again, to another once that node is silent).
+- The outcome goes to `g5k_replays` only (the runs observed, the node and its `worker_version`);
+  `g5k_results` does not change until `apply`. Rows of `g5k_replays` are kept: pending, issued, done, applied.
+- `report` lists, per cluster, the latest replay of each input that differs from what is stored, with the
+  keys that changed and the proposed action. A cluster is one unit: the replay is compared with the rows of
+  all its nodes for that input, exactly (status, exception kind, every captured key).
+
+  | proposed | when | `apply` |
+  |---|---|---|
+  | `delete` | stored as a mismatch or crash, now ok | removes the rows |
+  | `overwrite` | another mismatch than the stored one | rewrites the rows (state, exception, class) |
+  | `insert` | nothing stored (it was ok), now a mismatch | adds a row under the node that replayed |
+  | `unstable` | the repeated runs disagree | nothing, the tally is shown |
+
+- An input the cluster's own run has not reached yet has no stored row either, so it reads as "was ok".
+- A replayed input runs after the other queued inputs only, not after the thousands of cases that preceded
+  it in the run: a stored mismatch that came from state left by an earlier case shows up as a difference.
 
 ## Tests
 

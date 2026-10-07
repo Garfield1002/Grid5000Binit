@@ -15,6 +15,7 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, Field
 
+from . import replay
 from .classify import CLASSES, classify
 from .config import Config
 from .features import normalize
@@ -289,24 +290,29 @@ def create_app(cfg: Config) -> FastAPI:
             if host is None:
                 raise HTTPException(404, "unknown node_id; register first")
             n = conn.execute("SELECT * FROM g5k_nodes WHERE node_id=%s", (node_id,)).fetchone()
-            rows = fetch_batch(conn, n["cursor_tc"], n["cursor_si"], n["features"], size)
-            if not rows:
-                conn.execute("UPDATE g5k_nodes SET state='done', current_batch_id=NULL WHERE node_id=%s", (node_id,))
-                add_event(conn, "node_done", node_id, host, done_cases=n["done_cases"])
-                return {"batch_id": None, "cases": []}
-            last = rows[-1]
-            bid = conn.execute(
-                """INSERT INTO g5k_batches (node_id, n_cases, last_tc, last_si)
-                   VALUES (%s,%s,%s,%s) RETURNING batch_id""",
-                (node_id, len(rows), last["test_case_id"], last["state_index"]),
-            ).fetchone()["batch_id"]
+            replayed = replay.take(conn, n, size)
+            if replayed:
+                bid, rows = replayed
+                add_event(conn, "replay_start", node_id, host, batch_id=bid, n_cases=len(rows))
+            else:
+                rows = fetch_batch(conn, n["cursor_tc"], n["cursor_si"], n["features"], size)
+                if not rows:
+                    conn.execute("UPDATE g5k_nodes SET state='done', current_batch_id=NULL WHERE node_id=%s", (node_id,))
+                    add_event(conn, "node_done", node_id, host, done_cases=n["done_cases"])
+                    return {"batch_id": None, "cases": []}
+                last = rows[-1]
+                bid = conn.execute(
+                    """INSERT INTO g5k_batches (node_id, n_cases, last_tc, last_si)
+                       VALUES (%s,%s,%s,%s) RETURNING batch_id""",
+                    (node_id, len(rows), last["test_case_id"], last["state_index"]),
+                ).fetchone()["batch_id"]
+                add_event(conn, "batch_start", node_id, host, batch_id=bid, n_cases=len(rows),
+                          first=[rows[0]["test_case_id"], rows[0]["state_index"]],
+                          last=[last["test_case_id"], last["state_index"]])
             conn.execute(
                 "UPDATE g5k_nodes SET current_batch_id=%s, done_in_batch=0, state='running' WHERE node_id=%s",
                 (bid, node_id),
             )
-            add_event(conn, "batch_start", node_id, host, batch_id=bid, n_cases=len(rows),
-                      first=[rows[0]["test_case_id"], rows[0]["state_index"]],
-                      last=[last["test_case_id"], last["state_index"]])
         return {
             "batch_id": bid,
             "cases": [
@@ -338,6 +344,19 @@ def create_app(cfg: Config) -> FastAPI:
                 raise HTTPException(404, "unknown batch for this node")
             if bt["status"] == "done":
                 return {"ok": True, "duplicate": True}
+            if bt["replay"]:
+                # Recorded in g5k_replays only: neither the cursor, the counters nor g5k_results change.
+                n_inputs = replay.record(conn, b.batch_id, b.node_id, b.ok_ids, b.mismatches)
+                conn.execute(
+                    """UPDATE g5k_batches SET status='done', finished_at=now(), ok_count=%s,
+                           mismatch_count=%s, elapsed_s=%s WHERE batch_id=%s""",
+                    (b.ok_count, len(b.mismatches), b.elapsed_s, b.batch_id),
+                )
+                conn.execute("UPDATE g5k_nodes SET current_batch_id = NULL, done_in_batch = 0 WHERE node_id = %s",
+                             (b.node_id,))
+                add_event(conn, "replay_done", b.node_id, host, batch_id=b.batch_id, inputs=n_inputs,
+                          ok=b.ok_count, mismatches=len(b.mismatches))
+                return {"ok": True, "replayed": n_inputs}
 
             counts: dict[str, int] = {}
             n_save_mode = (conn.execute("SELECT save_mode FROM g5k_nodes WHERE node_id=%s",

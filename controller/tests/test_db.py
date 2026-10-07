@@ -317,3 +317,112 @@ def test_wall_rate(client):
         conn.execute("UPDATE g5k_nodes SET wall_s = 0")
     migrate(pool)
     assert status_node(client, a)["wall_cases_per_s"] == pytest.approx(n["wall_cases_per_s"])
+
+
+def test_replay(client, capsys):
+    from controller import cli, replay
+
+    def reg(host):
+        return client.post("/register", headers=H, json={
+            "host": host, "cluster": "gros", "cpuid_features": ["SSE"], "cpu_model": "X", "save_mode": "xsave",
+            "worker_version": "w (abc)"}).json()["node_id"]
+
+    def run(nid, **body):
+        b = client.get(f"/batch?node_id={nid}&size=10", headers=H).json()
+        r = client.post("/results", headers=H, json={"node_id": nid, "batch_id": b["batch_id"], **body})
+        return [(c["test_case_id"], c["state_index"]) for c in b["cases"]], r.json()
+
+    pool = client.app.state.pool
+    a = reg("gros-1")
+    # First pass: 1/0 has a wrong rax, 4/0 raises, 4/1 crashes, 1/1 is ok.
+    run(a, ok_count=1, mismatches=[
+        {"test_case_id": 1, "state_index": 0, "got_final_state": {"rax": 9, "flag": 2}},
+        {"test_case_id": 4, "state_index": 0, "got_exception_kind": "GP"},
+        {"test_case_id": 4, "state_index": 1, "status": "crash"}])
+    with pool.connection() as conn:
+        assert replay.add(conn, "gros", 1, dry_run=True) == (0, 2)
+        assert replay.add(conn, "gros", 1) == (2, 2)
+        assert replay.add(conn, "gros", 4, repeat=3) == (2, 2)
+        assert replay.add(conn, "gros", 4, 1) == (0, 1)  # already waiting
+        assert replay.add(conn, "other", 4, 1) == (1, 1)
+        assert replay.report(conn) == []
+
+    # Another host of the cluster runs them, ahead of its cursor and without moving it.
+    b = reg("gros-2")
+    before = client.get("/status.json", headers=H).json()["nodes"]
+    cases, r = run(b, ok_count=6, ok_ids=[[1, 1], [4, 0], [4, 0], [4, 1], [4, 1], [4, 1]], mismatches=[
+        {"test_case_id": 1, "state_index": 0, "got_final_state": {"rax": 9, "flag": 2}},
+        {"test_case_id": 4, "state_index": 0, "got_exception_kind": "GP"}])
+    assert cases == [(1, 0), (1, 1)] + [(4, 0)] * 3 + [(4, 1)] * 3
+    assert r == {"ok": True, "replayed": 4}
+    after = client.get("/status.json", headers=H).json()["nodes"]
+    key = lambda nodes: [(n["host"], n["cursor"], n["done_cases"], n["ok_count"]) for n in nodes]
+    assert key(before) == key(after)
+    assert len(client.get("/mismatches", headers=H).json()) == 3  # nothing changed yet
+    assert client.get(f"/batch?node_id={b}&size=10", headers=H).json()["cases"] == []  # the run itself is over
+
+    with pool.connection() as conn:
+        got = {(p["test_case_id"], p["state_index"]): p for p in replay.report(conn, "gros")}
+        assert {k: (p["action"], p["note"]) for k, p in got.items()} == {
+            (1, 0): (None, "same"), (1, 1): (None, "same"),
+            (4, 0): (None, "unstable"), (4, 1): ("delete", "")}
+        assert got[(4, 1)]["worker_version"] == "w (abc)" and got[(4, 1)]["host"] == "gros-2"
+        assert replay.tally(got[(4, 0)]["runs"]) == "ok x2, mismatch x1"
+        cli.print_report(conn)
+        out = capsys.readouterr().out.splitlines()
+        assert out[0] == "gros: 0 pending, 0 issued, 4 done, 0 applied; 2 replayed with the same result"
+        assert out[1] == ("  unstable  4/0  add rbx, rax  was: exception_mismatch (rows: 1)"
+                          "  replay: ok x2, mismatch x1  [w (abc), gros-2]")
+        assert out[2] == "  delete    4/1  add rbx, rax  was: crash (rows: 1)  replay: ok x3  [w (abc), gros-2]"
+        assert out[3].startswith("other: 1 pending")
+        assert [p["test_case_id"] for p in replay.apply(conn, "gros", "delete")] == [4]
+        assert replay.apply(conn, "gros", "delete") == []
+        assert replay.counts(conn) == {"gros": {"applied": 1, "done": 3}, "other": {"pending": 1}}
+    assert client.get("/mismatches?class=crash", headers=H).json() == []
+    with pool.connection() as conn:  # the counts behind /status follow, and an emptied class leaves them
+        assert {(r["class"], r["n"]) for r in conn.execute(
+            "SELECT class, n FROM g5k_class_counts WHERE node_id = %s", (a,))} == {
+            ("defined_state", 1), ("exception_mismatch", 1)}
+
+    # A replay that differs: 1/0 now has another rax, 1/1 (ok until now) raises.
+    with pool.connection() as conn:
+        replay.add(conn, "gros", 1)
+    run(b, mismatches=[
+        {"test_case_id": 1, "state_index": 0, "got_final_state": {"rax": 1, "flag": 18}},
+        {"test_case_id": 1, "state_index": 1, "got_exception_kind": "UD"}])
+    with pool.connection() as conn:
+        got = {p["state_index"]: p for p in replay.report(conn, "gros") if p["test_case_id"] == 1}
+        assert (got[0]["action"], got[0]["class"]) == ("overwrite", "undef_flags_only")
+        assert got[0]["changed"] == {"rax": (9, 1), "flag": (2, 18)}
+        assert (got[1]["action"], got[1]["class"]) == ("insert", "exception_mismatch")
+        cli.print_report(conn, "gros")
+        assert "            flag: 0x2 -> 0x12\n            rax: 0x9 -> 0x1\n" in capsys.readouterr().out
+        assert len(replay.apply(conn, "gros", "overwrite", insn="ADD RAX")) == 1
+        assert len(replay.apply(conn, "gros", "insert", tc=1)) == 1
+        assert [p["note"] for p in replay.report(conn, "gros")] == ["unstable"]
+    rows = {(m["test_case_id"], m["state_index"]): m for m in client.get("/mismatches", headers=H).json()}
+    assert rows[(1, 0)]["class"] == "undef_flags_only" and rows[(1, 0)]["host"] == "gros-1"
+    assert rows[(1, 1)]["got_exception_kind"] == "UD" and rows[(1, 1)]["host"] == "gros-2"
+    assert sorted(rows) == [(1, 0), (1, 1), (4, 0)]
+
+
+def test_replay_unreported_batch_is_served_again(client):
+    from controller import replay
+    from controller.app import check_silent
+
+    def reg(host):
+        return client.post("/register", headers=H, json={"host": host, "cluster": "gros", "cpu_model": host,
+                                                         "cpuid_features": ["SSE"]}).json()["node_id"]
+
+    def ids(nid):
+        return [(c["test_case_id"], c["state_index"])
+                for c in client.get(f"/batch?node_id={nid}&size=10", headers=H).json()["cases"]]
+
+    a, b = reg("gros-1"), reg("gros-2")
+    with client.app.state.pool.connection() as conn:
+        replay.add(conn, "gros", 4, 1)
+    assert ids(a) == [(4, 1)]
+    assert (4, 1) not in ids(b)[:1]  # handed to gros-1, which is alive
+    assert ids(a)[:1] == [(4, 1)]    # gros-1 asks again without having reported
+    assert check_silent(client.app.state.pool, 0.0) == 2
+    assert ids(b) == [(4, 1)]        # gros-1 went silent

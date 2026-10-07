@@ -108,6 +108,30 @@ ALTER TABLE g5k_nodes ADD COLUMN IF NOT EXISTS save_mode text;
 -- Time from batch issued to results received, summed over the node's batches (work_s is the part
 -- spent inside the VM). Kept on the node so that /status never aggregates g5k_batches.
 ALTER TABLE g5k_nodes ADD COLUMN IF NOT EXISTS wall_s double precision NOT NULL DEFAULT 0;
+
+-- A replay batch re-runs chosen inputs; it moves neither the cursor nor the counters.
+ALTER TABLE g5k_batches ADD COLUMN IF NOT EXISTS replay boolean NOT NULL DEFAULT false;
+
+CREATE TABLE IF NOT EXISTS g5k_replays (
+    id             bigserial PRIMARY KEY,
+    cluster        text NOT NULL,
+    test_case_id   bigint NOT NULL,
+    state_index    int NOT NULL,
+    repeat         int NOT NULL DEFAULT 1,
+    status         text NOT NULL DEFAULT 'pending',  -- pending, issued, done, applied
+    requested_at   timestamptz NOT NULL DEFAULT now(),
+    batch_id       bigint,
+    node_id        bigint,
+    worker_version text,
+    finished_at    timestamptz,
+    runs           jsonb,  -- distinct observations: [{n, status, got_final_state, got_exception_kind}]
+    applied_at     timestamptz,
+    action         text
+);
+-- An input waits at most once per cluster.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_g5k_replays_open
+    ON g5k_replays (cluster, test_case_id, state_index) WHERE status IN ('pending', 'issued');
+CREATE INDEX IF NOT EXISTS idx_g5k_replays_batch ON g5k_replays (batch_id);
 """
 
 # Nodes that reported batches before wall_s existed: done_cases at the pace of their own batches
