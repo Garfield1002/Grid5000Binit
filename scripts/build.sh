@@ -41,7 +41,9 @@ if [[ $skip_worker -eq 0 ]]; then
     echo "==> worker ($TARGET)"
     rustup target add "$TARGET" >/dev/null 2>&1 || true
     # cd so worker/.cargo/config.toml (CC=clang for ring, crt-static) is picked up.
-    (cd "$ROOT/worker" && cargo build --release --target "$TARGET")
+    # The worker reports the commit it and the kernel were built from (worker_version).
+    (cd "$ROOT/worker" && G5K_BUILD="$(git -C "$ROOT" describe --always --dirty)" \
+        cargo build --release --target "$TARGET")
     cp "$ROOT/worker/target/$TARGET/release/g5k-worker" "$DIST/g5k-worker"
 fi
 

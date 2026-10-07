@@ -50,6 +50,9 @@ Env: `CONTROLLER_URL`, `CONTROLLER_TOKEN` (also `--controller-url/-token`).
   `GET /batch` -> run -> compare -> `POST /results`. Heartbeats go out every
   30 s from a thread. HTTP is retried with exponential backoff (1 s to 60 s)
   on network errors, 5xx, 408 and 429; other 4xx are fatal.
+- The worker version is `g5k-worker <version> (<commit>)` when built by `scripts/build.sh`, which
+  passes the commit of the repository (`-dirty` if it has local changes) as `G5K_BUILD`; the kernel
+  image is built from the same tree, so it tells both apart from an older build.
 - Per case the request is `[32-byte required-feature mask][TestCase]`; the
   result is an XOR diff against the initial state, which the worker XORs back.
   JSON state conversion is adapted from the old `aegis/client`.
