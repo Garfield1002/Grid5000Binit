@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>x86db explorer</title>
+<link rel="stylesheet" href="/static/explorer.css">
+</head>
+<body data-view="checks">
+<nav>
+  <a id="home" href="/"><b>x86db explorer</b></a><span id="crumbs"></span>
+  <span class="right"><a href="/checks">checks</a></span>
+</nav>
+<p id="error" class="banner" hidden></p>
+
+<main id="page" hidden>
+<p id="banner" class="banner" hidden></p>
+
+<h1>Checks</h1>
+<p id="watermark"></p>
+<table class="groups">
+  <thead><tr><th>check</th><th>result</th><th>checked at</th><th>detail</th></tr></thead>
+  <tbody id="checks"></tbody>
+</table>
+<p id="none" hidden>No check has run yet; they run once the summary has caught up.</p>
+</main>
+
+<script src="/static/explorer.js"></script>
+</body>
+</html>

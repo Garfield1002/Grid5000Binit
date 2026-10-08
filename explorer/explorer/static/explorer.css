@@ -1,0 +1,94 @@
+:root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink2: #52514e; --mut: #898781;
+  --line: #e1e0d9; --axis: #c3c2b7; --link: #184f95;
+  /* class colours: three hues that stay apart for colour-blind readers; crash is an outline */
+  --k-defined: #2a78d6; --k-undef: #1baf7a; --k-exc: #eb6834; --critical: #d03b3b;
+  --warn-bg: #fdf3d7;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink2: #c3c2b7; --mut: #898781;
+    --line: #2c2c2a; --axis: #383835; --link: #9ec5f4;
+    --k-defined: #3987e5; --k-undef: #199e70; --k-exc: #d95926; --critical: #d03b3b;
+    --warn-bg: #3a3118;
+  }
+}
+body { font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0 16px 32px;
+       background: var(--page); color: var(--ink); }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+h1 { font-size: 20px; margin: 16px 0 4px; }
+h2 { font-size: 16px; margin: 24px 0 4px; }
+code, pre, table.state td, table.grid td { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+pre { margin: 0; white-space: pre-wrap; font-size: 12px; }
+nav { padding: 10px 0; border-bottom: 1px solid var(--line); }
+nav .right { float: right; }
+.mut { color: var(--mut); }
+.small { font-size: 12px; }
+.banner { background: var(--warn-bg); border: 1px solid var(--axis); padding: 6px 10px; border-radius: 4px; }
+
+.filters { margin: 12px 0; padding: 8px 10px; background: var(--surface); border: 1px solid var(--line);
+           border-radius: 4px; }
+.filters label { margin-right: 12px; white-space: nowrap; }
+.filters .grp { margin-right: 16px; }
+.filters .grp a { margin-right: 12px; }
+.filters details { margin: 6px 0; }
+.filters .keys { display: flex; flex-wrap: wrap; gap: 2px 4px; max-height: 180px; overflow: auto;
+                 margin-top: 4px; }
+.filters p { margin: 4px 0 0; }
+#find { font: inherit; padding: 3px 6px; width: 200px; background: var(--surface); color: var(--ink);
+        border: 1px solid var(--axis); border-radius: 4px; }
+
+.scroll { overflow: auto; max-height: calc(100vh - 60px); border: 1px solid var(--line);
+          background: var(--surface); }
+table { border-collapse: separate; border-spacing: 0; }
+th { text-align: left; font-weight: 600; }
+table.mx { font-size: 12px; font-variant-numeric: tabular-nums; }
+table.mx td, table.mx th { border-right: 1px solid var(--surface); border-bottom: 1px solid var(--surface); }
+table.mx thead th { position: sticky; top: 0; z-index: 2; background: var(--surface); }
+table.mx thead tr:nth-child(2) th { top: 35px; }
+table.mx th.corner { left: 0; z-index: 3; vertical-align: bottom; padding: 4px 8px; }
+/* two lines, the microarchitecture then its years; the model row sticks below them (34px + border) */
+table.mx th.band { height: 34px; padding: 0 4px; text-align: center; color: var(--ink2); white-space: nowrap;
+                   line-height: 15px; border-left: 1px solid var(--axis); border-bottom: 1px solid var(--axis);
+                   font-weight: 500; }
+table.mx th.band small { display: block; color: var(--mut); font-size: 11px; font-weight: 400; }
+table.mx th.model { height: 104px; min-width: 46px; vertical-align: bottom; padding: 4px 0;
+                    border-bottom: 1px solid var(--axis); font-weight: 500; }
+table.mx th.model.edge { border-left: 1px solid var(--axis); }
+table.mx th.model span { display: block; writing-mode: vertical-rl; transform: rotate(180deg);
+                         white-space: nowrap; margin: 0 auto; }
+table.mx th.model .prog { color: var(--ink2); font-size: 10px; margin-top: 2px; }
+table.mx th.row { position: sticky; left: 0; z-index: 1; background: var(--surface); padding: 2px 8px;
+                  white-space: nowrap; max-width: 340px; overflow: hidden; text-overflow: ellipsis;
+                  font-weight: 500; border-right: 1px solid var(--axis); }
+table.mx th.row span { margin-left: 8px; font-weight: 400; }
+table.mx td { text-align: right; padding: 2px 4px; min-width: 38px; white-space: nowrap; }
+table.mx tbody tr:hover th.row { background: var(--line); }
+td.st { text-align: center !important; color: var(--mut); }
+/* run and nothing differs: present, but fainter than any cell that has something to say */
+.z { color: color-mix(in oklab, var(--mut) 55%, var(--surface)); }
+sup { font-size: 9px; color: var(--ink2); margin-left: 1px; }
+
+.k-defined_state { --k: var(--k-defined); }
+.k-undef_flags_only { --k: var(--k-undef); }
+.k-exception_mismatch { --k: var(--k-exc); }
+td.c, .sw { background: color-mix(in oklab, var(--k) var(--depth), var(--surface)); }
+.b1 { --depth: 14%; } .b2 { --depth: 34%; } .b3 { --depth: 60%; } .b4 { --depth: 88%; }
+td.c.k-crash, .sw.k-crash { background: var(--surface); outline: 2px solid var(--critical); outline-offset: -2px; }
+td.c.part { font-style: italic; }
+.sw { display: inline-block; width: 12px; height: 12px; vertical-align: -2px; border-radius: 2px;
+      margin-left: 6px; }
+.legend { color: var(--ink2); }
+
+table.groups, table.grid, table.state { background: var(--surface); border: 1px solid var(--line); }
+table.groups td, table.groups th, table.grid td, table.grid th, table.state td, table.state th {
+  padding: 3px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.grid thead th, table.state thead th { position: sticky; top: 0; background: var(--surface);
+                                           border-bottom: 1px solid var(--axis); }
+table.grid td.g { border-left: 3px solid var(--k, var(--critical)); font-size: 12px; }
+table.state td { font-size: 12px; word-break: break-all; max-width: 320px; }
+table.state td.diff, td.diff { background: color-mix(in oklab, var(--k-exc) 22%, var(--surface)); font-weight: 600; }
+.bits { color: var(--ink2); font-weight: 400; }

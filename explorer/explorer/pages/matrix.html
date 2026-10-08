@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>x86db explorer</title>
+<link rel="stylesheet" href="/static/explorer.css">
+</head>
+<body data-view="matrix">
+<nav>
+  <a id="home" href="/"><b>x86db explorer</b></a><span id="crumbs"></span>
+  <span class="right"><a href="/checks">checks</a></span>
+</nav>
+<p id="error" class="banner" hidden></p>
+
+<main id="page" hidden>
+<p id="banner" class="banner" hidden></p>
+
+<form id="filters" class="filters">
+  <span class="grp"><b>Classes</b> <span id="classes"></span></span>
+  <details id="keys-box">
+    <summary><b>Diff keys</b><span id="ignored"></span></summary>
+    <div id="keys" class="keys"></div>
+  </details>
+  <span class="grp">
+    <a id="no-x87">ignore x87 pointers</a>
+    <a id="everything">show everything</a>
+  </span>
+  <p class="mut small">A count is left out only when its class is off or all of its differing keys are ignored.</p>
+</form>
+
+<p>
+  <input type="search" id="find" placeholder="filter instructions" autocomplete="off">
+  <span id="shown" class="mut"></span> <a id="other"></a>
+</p>
+
+<p class="legend small">
+  Cell: mismatching states as a share of the states run. Colour is the class with most states:
+  <span class="sw k-defined_state b3"></span> defined state
+  <span class="sw k-undef_flags_only b3"></span> undefined flags only <sup>u</sup>
+  <span class="sw k-exception_mismatch b3"></span> exception <sup>e</sup>
+  <span class="sw k-crash b3"></span> crash <sup>c</sup>.
+  Depth:
+  <span class="sw k-defined_state b1"></span> &lt;0.1%
+  <span class="sw k-defined_state b2"></span> &lt;1%
+  <span class="sw k-defined_state b3"></span> &lt;10%
+  <span class="sw k-defined_state b4"></span> 10% and more.
+  <span class="z">0%</span> run, nothing differs, – not supported by the CPU, · not yet run,
+  … run in progress (a share in italics is partial). Hover a cell for counts.
+</p>
+
+<div class="scroll">
+  <table class="mx">
+    <thead id="head"></thead>
+    <tbody id="rows"></tbody>
+  </table>
+</div>
+</main>
+
+<script src="/static/explorer.js"></script>
+</body>
+</html>
