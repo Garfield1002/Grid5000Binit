@@ -26,7 +26,6 @@ use api::{Api, Case};
 use compare::{Got, SaveMode, matches};
 use vm::{RunError, Vm, VmConfig};
 
-const WORKER_VERSION: &str = concat!(env!("CARGO_PKG_NAME"), " ", env!("CARGO_PKG_VERSION"));
 const HEARTBEAT_EVERY: Duration = Duration::from_secs(30);
 const IDLE_POLL: Duration = Duration::from_secs(60);
 const START_ATTEMPTS: u32 = 5;
@@ -203,6 +202,15 @@ impl Runner {
     }
 }
 
+/// `g5k-worker 0.1.0 (06483c8)`: the commit `scripts/build.sh` built the worker and the kernel from.
+fn worker_version() -> String {
+    let base = concat!(env!("CARGO_PKG_NAME"), " ", env!("CARGO_PKG_VERSION"));
+    match option_env!("G5K_BUILD") {
+        Some(build) => format!("{base} ({build})"),
+        None => base.to_string(),
+    }
+}
+
 fn decode_hex(s: &str) -> Option<Vec<u8>> {
     let s = s.strip_prefix("0x").unwrap_or(s);
     if !s.len().is_multiple_of(2) || !s.is_ascii() {
@@ -249,7 +257,7 @@ fn run(args: Args) -> Result<()> {
         "cpuid_features": names::mask_to_names(&sysinfo::cpuid_mask()),
         "kernel_features": kernel_features,
         "save_mode": mode.as_str(),
-        "worker_version": WORKER_VERSION,
+        "worker_version": worker_version(),
     }))?;
     log!("registered as node {node_id} ({host})");
 

@@ -1,24 +1,26 @@
 import asyncio
 import hmac
-import html
 import logging
 import threading
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, Field
 
+from . import replay
 from .classify import CLASSES, classify
 from .config import Config
 from .features import normalize
 from .schema import migrate
+from .targets import load_targets, match
 
 log = logging.getLogger("controller")
 MAX_BATCH = 5000
@@ -109,14 +111,20 @@ ORDER BY tc.id, s.idx
 LIMIT %(n)s
 """
 
+# One pass over test_results (the big table); run without parameters, so % is literal.
+STATES_COUNT_SQL = """
+SELECT tc.instruction_id, count(*) AS n
+FROM test_results tr
+JOIN test_cases tc ON tc.id = tr.test_case_id
+WHERE (tc.status IS NULL OR tc.status NOT LIKE 'ERR%')
+GROUP BY 1
+"""
+
 TOTAL_SQL = """
-SELECT count(*) AS n
-FROM test_cases tc
-CROSS JOIN LATERAL generate_series(0, jsonb_array_length(tc.initial_states) - 1) AS s(idx)
-JOIN test_results tr ON tr.test_case_id = tc.id AND tr.state_index = s.idx
-WHERE (tc.status IS NULL OR tc.status NOT LIKE 'ERR%%')
-  AND NOT EXISTS (SELECT 1 FROM instruction_features f
-                  WHERE f.instruction_id = tc.instruction_id
+SELECT coalesce(sum(s.n), 0)::bigint AS n
+FROM g5k_instruction_states s
+WHERE NOT EXISTS (SELECT 1 FROM instruction_features f
+                  WHERE f.instruction_id = s.instruction_id
                     AND NOT (f.feature = ANY(%(feats)s::text[])))
 """
 
@@ -155,15 +163,16 @@ def takeover(conn, node, b, feats):
     p = {"id": node["node_id"], "cpu": b.cpu_model, "mc": b.microcode, "feats": feats,
          "sm": node["save_mode"], "tc": node["cursor_tc"], "si": node["cursor_si"]}
     donor = conn.execute(
-        f"""SELECT node_id, host, cursor_tc, cursor_si, done_cases, ok_count, work_s
+        f"""SELECT node_id, host, cursor_tc, cursor_si, done_cases, ok_count, work_s, wall_s
             FROM g5k_nodes WHERE {same} AND (cursor_tc, cursor_si) > (%(tc)s, %(si)s)
             ORDER BY cursor_tc DESC, cursor_si DESC LIMIT 1""", p).fetchone()
     if donor:
         conn.execute(
-            """UPDATE g5k_nodes SET cursor_tc=%s, cursor_si=%s, done_cases=%s, ok_count=%s, work_s=%s
+            """UPDATE g5k_nodes SET cursor_tc=%s, cursor_si=%s, done_cases=%s, ok_count=%s, work_s=%s,
+                   wall_s=%s
                WHERE node_id=%s""",
             (donor["cursor_tc"], donor["cursor_si"], donor["done_cases"], donor["ok_count"],
-             donor["work_s"], node["node_id"]))
+             donor["work_s"], donor["wall_s"], node["node_id"]))
     conn.execute(f"UPDATE g5k_nodes SET state='moved', silent=false, current_batch_id=NULL "
                  f"WHERE {same} AND state='running'", p)
     return donor
@@ -186,10 +195,21 @@ def check_silent(pool, silent_after_s: float) -> int:
 
 # ── app ───────────────────────────────────────────────────────────────
 
+# /status and /status.json need no token; their content is reused for this long.
+STATUS_CACHE_S = 10.0
+# Static page that fetches /status.json and renders it in the browser.
+STATUS_PAGE = Path(__file__).with_name("status.html")
+
+
 def create_app(cfg: Config) -> FastAPI:
     pool_holder: dict[str, Any] = {}
     total_cache: dict[tuple, tuple[float, Optional[int]]] = {}
     total_lock = threading.Lock()
+    total_threads: dict[tuple, threading.Thread] = {}
+    total_run = threading.Lock()
+    status_cache: list = []
+    status_lock = threading.Lock()
+    targets = load_targets(cfg.targets_file)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -270,24 +290,29 @@ def create_app(cfg: Config) -> FastAPI:
             if host is None:
                 raise HTTPException(404, "unknown node_id; register first")
             n = conn.execute("SELECT * FROM g5k_nodes WHERE node_id=%s", (node_id,)).fetchone()
-            rows = fetch_batch(conn, n["cursor_tc"], n["cursor_si"], n["features"], size)
-            if not rows:
-                conn.execute("UPDATE g5k_nodes SET state='done', current_batch_id=NULL WHERE node_id=%s", (node_id,))
-                add_event(conn, "node_done", node_id, host, done_cases=n["done_cases"])
-                return {"batch_id": None, "cases": []}
-            last = rows[-1]
-            bid = conn.execute(
-                """INSERT INTO g5k_batches (node_id, n_cases, last_tc, last_si)
-                   VALUES (%s,%s,%s,%s) RETURNING batch_id""",
-                (node_id, len(rows), last["test_case_id"], last["state_index"]),
-            ).fetchone()["batch_id"]
+            replayed = replay.take(conn, n, size)
+            if replayed:
+                bid, rows = replayed
+                add_event(conn, "replay_start", node_id, host, batch_id=bid, n_cases=len(rows))
+            else:
+                rows = fetch_batch(conn, n["cursor_tc"], n["cursor_si"], n["features"], size)
+                if not rows:
+                    conn.execute("UPDATE g5k_nodes SET state='done', current_batch_id=NULL WHERE node_id=%s", (node_id,))
+                    add_event(conn, "node_done", node_id, host, done_cases=n["done_cases"])
+                    return {"batch_id": None, "cases": []}
+                last = rows[-1]
+                bid = conn.execute(
+                    """INSERT INTO g5k_batches (node_id, n_cases, last_tc, last_si)
+                       VALUES (%s,%s,%s,%s) RETURNING batch_id""",
+                    (node_id, len(rows), last["test_case_id"], last["state_index"]),
+                ).fetchone()["batch_id"]
+                add_event(conn, "batch_start", node_id, host, batch_id=bid, n_cases=len(rows),
+                          first=[rows[0]["test_case_id"], rows[0]["state_index"]],
+                          last=[last["test_case_id"], last["state_index"]])
             conn.execute(
                 "UPDATE g5k_nodes SET current_batch_id=%s, done_in_batch=0, state='running' WHERE node_id=%s",
                 (bid, node_id),
             )
-            add_event(conn, "batch_start", node_id, host, batch_id=bid, n_cases=len(rows),
-                      first=[rows[0]["test_case_id"], rows[0]["state_index"]],
-                      last=[last["test_case_id"], last["state_index"]])
         return {
             "batch_id": bid,
             "cases": [
@@ -319,6 +344,19 @@ def create_app(cfg: Config) -> FastAPI:
                 raise HTTPException(404, "unknown batch for this node")
             if bt["status"] == "done":
                 return {"ok": True, "duplicate": True}
+            if bt["replay"]:
+                # Recorded in g5k_replays only: neither the cursor, the counters nor g5k_results change.
+                n_inputs = replay.record(conn, b.batch_id, b.node_id, b.ok_ids, b.mismatches)
+                conn.execute(
+                    """UPDATE g5k_batches SET status='done', finished_at=now(), ok_count=%s,
+                           mismatch_count=%s, elapsed_s=%s WHERE batch_id=%s""",
+                    (b.ok_count, len(b.mismatches), b.elapsed_s, b.batch_id),
+                )
+                conn.execute("UPDATE g5k_nodes SET current_batch_id = NULL, done_in_batch = 0 WHERE node_id = %s",
+                             (b.node_id,))
+                add_event(conn, "replay_done", b.node_id, host, batch_id=b.batch_id, inputs=n_inputs,
+                          ok=b.ok_count, mismatches=len(b.mismatches))
+                return {"ok": True, "replayed": n_inputs}
 
             counts: dict[str, int] = {}
             n_save_mode = (conn.execute("SELECT save_mode FROM g5k_nodes WHERE node_id=%s",
@@ -389,12 +427,13 @@ def create_app(cfg: Config) -> FastAPI:
             )
             conn.execute(
                 """UPDATE g5k_nodes SET done_cases = done_cases + %s, ok_count = ok_count + %s,
-                       work_s = work_s + %s, current_batch_id = NULL, done_in_batch = 0,
+                       work_s = work_s + %s, wall_s = wall_s + extract(epoch FROM now() - %s),
+                       current_batch_id = NULL, done_in_batch = 0,
                        save_mode = COALESCE(%s, save_mode),
                        cursor_tc = CASE WHEN (%s, %s) > (cursor_tc, cursor_si) THEN %s ELSE cursor_tc END,
                        cursor_si = CASE WHEN (%s, %s) > (cursor_tc, cursor_si) THEN %s ELSE cursor_si END
                    WHERE node_id = %s""",
-                (bt["n_cases"], b.ok_count, b.elapsed_s, b.save_mode,
+                (bt["n_cases"], b.ok_count, b.elapsed_s, bt["issued_at"], b.save_mode,
                  bt["last_tc"], bt["last_si"], bt["last_tc"],
                  bt["last_tc"], bt["last_si"], bt["last_si"], b.node_id),
             )
@@ -418,81 +457,169 @@ def create_app(cfg: Config) -> FastAPI:
 
     # ── monitoring ────────────────────────────────────────────────────
 
-    def total_for(conn, feats: list[str]) -> Optional[int]:
+    def count_total(key: tuple) -> None:
+        with total_run:  # one at a time: the first call scans the corpus, the others are cheap
+            try:
+                with get_pool().connection() as conn:
+                    if conn.execute("SELECT count(*) AS n FROM g5k_instruction_states").fetchone()["n"] == 0:
+                        conn.execute("SET LOCAL statement_timeout = '2h'")
+                        conn.execute("INSERT INTO g5k_instruction_states (instruction_id, n) " + STATES_COUNT_SQL)
+                with get_pool().connection() as conn:
+                    v = conn.execute(TOTAL_SQL, {"feats": list(key)}).fetchone()["n"]
+            except Exception:
+                log.exception("total count failed")
+                v = None
+        with total_lock:
+            total_cache[key] = (time.time(), v)
+
+    def total_for(feats: list[str]) -> Optional[int]:
+        """Eligible corpus size for a feature set. Counted in the background: /status waits a
+        second for it, then shows the total as unknown until the count is in."""
         key = tuple(feats)
         with total_lock:
             c = total_cache.get(key)
-            if c and time.time() - c[0] < 600:
+            # The corpus does not change while the controller runs: a count is kept for good,
+            # only a failure (slow query on a busy database) is retried, once a minute.
+            if c and (c[1] is not None or time.time() - c[0] < 60):
                 return c[1]
-        try:
-            conn.execute("SET LOCAL statement_timeout = '20s'")
-            v = conn.execute(TOTAL_SQL, {"feats": list(feats)}).fetchone()["n"]
-        except Exception:
-            log.exception("total count failed")
-            v = None
-            conn.rollback()
+            th = total_threads.get(key)
+            if th is None or not th.is_alive():
+                th = total_threads[key] = threading.Thread(target=count_total, args=(key,), daemon=True)
+                th.start()
+        th.join(1.0)
         with total_lock:
-            total_cache[key] = (time.time(), v)
-        return v
+            c = total_cache.get(key)
+        return c[1] if c else None
+
+    def cached_status() -> dict:
+        """build_status, reused for STATUS_CACHE_S: the public page must not cost a query set per hit."""
+        with status_lock:
+            if status_cache and time.monotonic() - status_cache[0] < STATUS_CACHE_S:
+                return status_cache[1]
+            s = build_status()
+            status_cache[:] = [time.monotonic(), s]
+            return s
 
     def build_status() -> dict:
         with get_pool().connection() as conn:
             nodes = conn.execute(
                 """SELECT node_id, host, cluster, cpu_model, microcode, worker_version, state,
-                          silent, save_mode, done_cases, ok_count, work_s, qemu_restarts, features,
+                          silent, save_mode, done_cases, ok_count, work_s, wall_s, qemu_restarts, features,
                           current_batch_id, done_in_batch, cursor_tc, cursor_si,
                           registered_at, last_seen,
                           extract(epoch FROM now() - last_seen) AS last_seen_ago_s
                    FROM g5k_nodes ORDER BY host"""
             ).fetchall()
-            cls = {}
-            for r in conn.execute("SELECT node_id, class, count(*) AS n FROM g5k_results GROUP BY 1,2"):
+            # Maintained by a trigger on g5k_results; never scan that table here.
+            cls: dict = {}
+            for r in conn.execute("SELECT node_id, class, n FROM g5k_class_counts"):
                 cls.setdefault(r["node_id"], {})[r["class"]] = r["n"]
             events = conn.execute(
                 "SELECT id, ts, kind, node_id, host, detail FROM g5k_events ORDER BY id DESC LIMIT 50"
             ).fetchall()
-            models: dict[str, dict] = {}
             out_nodes = []
-            for n in nodes:
-                total = total_for(conn, n["features"])
+            by_target: dict[str, list[dict]] = {}
+            groups: dict = {}
+
+            def stats(n, total) -> dict:
                 rate = n["done_cases"] / n["work_s"] if n["work_s"] > 0 else None
+                # Batch issued -> results received: what the node really gets through, transfer included.
+                wall_rate = n["done_cases"] / n["wall_s"] if n["wall_s"] > 0 else None
                 remaining = max(total - n["done_cases"], 0) if total is not None else None
-                eta = remaining / rate if (rate and remaining is not None) else None
+                pace = wall_rate or rate
+                eta = remaining / pace if (pace and remaining is not None) else None
+                return dict(total_cases=total, rate_cases_per_s=rate, wall_cases_per_s=wall_rate, eta_s=eta)
+
+            for n in nodes:
+                total = total_for(n["features"])
                 c = cls.get(n["node_id"], {})
+                t = match(targets, n["cpu_model"], n["cluster"])
                 d = {k: n[k] for k in ("node_id", "host", "cluster", "cpu_model", "microcode",
                                        "worker_version", "save_mode", "state", "silent", "done_cases",
                                        "ok_count", "qemu_restarts", "current_batch_id",
                                        "done_in_batch")}
-                d.update(total_cases=total, rate_cases_per_s=rate, eta_s=eta, mismatch_classes=c,
+                d.update(stats(n, total), mismatch_classes=c,
                          last_seen=n["last_seen"].isoformat(),
                          last_seen_ago_s=float(n["last_seen_ago_s"]),
-                         cursor=[n["cursor_tc"], n["cursor_si"]])
+                         cursor=[n["cursor_tc"], n["cursor_si"]],
+                         target=t.cpu_model if t else None)
                 out_nodes.append(d)
-                m = models.setdefault(n["cpu_model"] or "?", {"nodes": 0, "done_cases": 0, "ok_count": 0,
-                                                              "silent": 0, "mismatch_classes": {}})
-                m["nodes"] += 1
-                # Not summed: a node that takes a run over inherits its predecessor's counters.
-                m["done_cases"] = max(m["done_cases"], n["done_cases"])
-                m["ok_count"] = max(m["ok_count"], n["ok_count"])
-                m["silent"] += 1 if n["silent"] else 0
-                for k, v in c.items():
-                    m["mismatch_classes"][k] = m["mismatch_classes"].get(k, 0) + v
+                # Same rule as takeover(): hosts of one spec share one run.
+                key = ((n["cpu_model"], n["microcode"], tuple(n["features"]), n["save_mode"])
+                       if n["cpu_model"] else n["node_id"])
+                groups.setdefault(key, []).append((n, d))
+                if t:
+                    by_target.setdefault(t.cpu_model, []).append(d)
+
+            runs = []
+            for members in groups.values():
+                # The head carries the run's counters: each host inherits them from its predecessor.
+                n, d = max(members, key=lambda m: (m[0]["cursor_tc"], m[0]["cursor_si"], m[0]["last_seen"]))
+                # Summed: a case reported by two hosts of the run (replaced host still alive) counts
+                # twice, deduplicating would cost a second pass over g5k_results.
+                c: dict[str, int] = {}
+                for _, x in members:
+                    for k, v in x["mismatch_classes"].items():
+                        c[k] = c.get(k, 0) + v
+                runs.append({
+                    **d, "mismatch_classes": c,
+                    # In order of use, the current host last.
+                    "hosts": [x["host"] for m, x in sorted(members, key=lambda m: m[0]["last_seen"])],
+                    "qemu_restarts": sum(x["qemu_restarts"] for _, x in members),
+                })
+
+        def frac(n):
+            return min(n["done_cases"] / n["total_cases"], 1.0) if n["total_cases"] else 0.0
+
+        out_targets = []
+        for t in targets:
+            ns = by_target.get(t.cpu_model, [])
+            if any(n["state"] == "done" for n in ns):
+                st = "done"
+            elif any(n["state"] == "running" and not n["silent"] for n in ns):
+                st = "active"
+            else:
+                st = "stalled" if ns else "todo"
+            out_targets.append({
+                "cpu_model": t.cpu_model, "microarch": t.microarch, "cluster": t.cluster,
+                "site": t.site, "queue": t.queue, "abaca": t.abaca, "status": st,
+                "progress": 1.0 if st == "done" else max(map(frac, ns), default=0.0),
+                "hosts": [n["host"] for n in ns],
+            })
+        archs = {t["microarch"] for t in out_targets}
+        count = lambda st, ts=out_targets: sum(1 for t in ts if t["status"] == st)
+        reachable = [t for t in out_targets if not t["abaca"]]
+        objective = {
+            "targets": out_targets,
+            "models": {"total": len(out_targets), **{s: count(s) for s in ("done", "active", "stalled", "todo")}},
+            "reachable": {"total": len(reachable), "done": count("done", reachable)},
+            "microarchs": {
+                "total": len(archs),
+                "done": len({t["microarch"] for t in out_targets if t["status"] == "done"}),
+                "started": len({t["microarch"] for t in out_targets if t["status"] != "todo"}),
+            },
+        }
+
         return {
             "generated_at": time.time(),
             "nodes": out_nodes,
-            "cpu_models": models,
+            "runs": runs,
+            "objective": objective,
             "silent_nodes": [n["host"] for n in out_nodes if n["silent"]],
             "events": [{**e, "ts": e["ts"].isoformat()} for e in events],
         }
 
-    @app.get("/status.json", dependencies=[Depends(auth)])
-    def status_json():
-        return JSONResponse(build_status())
+    @app.get("/", include_in_schema=False)
+    def root():
+        return RedirectResponse("/status")
 
-    @app.get("/status", response_class=HTMLResponse, dependencies=[Depends(auth)])
-    def status_page(request: Request):
-        s = build_status()
-        return HTMLResponse(render_status(s, request.url.query))
+    @app.get("/status.json")
+    def status_json():
+        return JSONResponse(cached_status())
+
+    @app.get("/status", include_in_schema=False)
+    def status_page():
+        return FileResponse(STATUS_PAGE, media_type="text/html")
 
     @app.get("/mismatches", dependencies=[Depends(auth)])
     def mismatches(class_: Optional[str] = Query(None, alias="class"), host: Optional[str] = None,
@@ -518,52 +645,3 @@ def create_app(cfg: Config) -> FastAPI:
         return JSONResponse([{**r, "created_at": r["created_at"].isoformat()} for r in rows])
 
     return app
-
-
-def _dur(s) -> str:
-    if s is None:
-        return "?"
-    s = int(s)
-    return f"{s // 3600}h{(s % 3600) // 60:02d}m" if s >= 3600 else f"{s // 60}m{s % 60:02d}s"
-
-
-def render_status(s: dict, query: str = "") -> str:
-    e = html.escape
-    def cls_str(c):
-        return ", ".join(f"{e(k)}={v}" for k, v in sorted(c.items())) or "-"
-    rows = []
-    for n in s["nodes"]:
-        warn = n["silent"]
-        pct = f"{100 * n['done_cases'] / n['total_cases']:.1f}%" if n["total_cases"] else "?"
-        rate = f"{n['rate_cases_per_s']:.1f}/s" if n["rate_cases_per_s"] else "?"
-        rows.append(
-            f"<tr class='{'warn' if warn else ''}'><td>{e(n['host'])}{' SILENT' if warn else ''}</td>"
-            f"<td>{e(str(n['cpu_model']))}</td><td>{e(str(n['save_mode'] or '?'))}</td><td>{e(n['state'])}</td>"
-            f"<td>{n['done_cases']} / {n['total_cases'] if n['total_cases'] is not None else '?'} ({pct})</td>"
-            f"<td>{rate}</td><td>{_dur(n['eta_s'])}</td><td>{cls_str(n['mismatch_classes'])}</td>"
-            f"<td>{n['qemu_restarts']}</td><td>{_dur(n['last_seen_ago_s'])} ago</td></tr>"
-        )
-    models = "".join(
-        f"<tr><td>{e(k)}</td><td>{m['nodes']}</td><td>{m['done_cases']}</td><td>{m['ok_count']}</td>"
-        f"<td>{cls_str(m['mismatch_classes'])}</td><td>{m['silent']}</td></tr>"
-        for k, m in sorted(s["cpu_models"].items())
-    )
-    evs = "".join(
-        f"<tr><td>{e(ev['ts'])}</td><td>{e(ev['kind'])}</td><td>{e(str(ev['host'] or ''))}</td>"
-        f"<td>{e(str(ev['detail']))}</td></tr>" for ev in s["events"]
-    )
-    banner = (f"<p class='warn'>Silent nodes: {e(', '.join(s['silent_nodes']))}</p>"
-              if s["silent_nodes"] else "")
-    return f"""<!doctype html><html><head><meta charset="utf-8">
-<meta http-equiv="refresh" content="10;url=/status{('?' + e(query)) if query else ''}">
-<title>Grid5000Binit status</title>
-<style>body{{font-family:sans-serif;margin:1em}}table{{border-collapse:collapse;margin-bottom:1.5em}}
-td,th{{border:1px solid #ccc;padding:2px 8px;text-align:left;font-size:13px}}
-.warn{{background:#fdd;color:#900}}td{{font-family:monospace}}</style></head><body>
-<h1>Grid5000Binit controller</h1>{banner}
-<h2>Nodes</h2><table><tr><th>host</th><th>cpu</th><th>save</th><th>state</th><th>progress</th><th>rate</th>
-<th>ETA</th><th>mismatches</th><th>qemu restarts</th><th>last seen</th></tr>{''.join(rows)}</table>
-<h2>CPU models</h2><table><tr><th>model</th><th>nodes</th><th>done</th><th>ok</th><th>mismatches</th><th>silent</th></tr>{models}</table>
-<h2>Recent events</h2><table><tr><th>time</th><th>kind</th><th>host</th><th>detail</th></tr>{evs}</table>
-<p><a href="/status.json?{e(query)}">status.json</a> | <a href="/mismatches?{e(query)}">mismatches</a></p>
-</body></html>"""

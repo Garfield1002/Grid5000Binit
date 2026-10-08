@@ -48,20 +48,22 @@ Every request carries `Authorization: Bearer $CONTROLLER_TOKEN`. Base URL is `$C
   The controller serves each node every eligible case (required ⊆ node features), resuming from the node's cursor. At `/register` a node takes over the cursor of the most advanced node with the same cpu_model, microcode, features and save_mode (a resubmitted best-effort job lands on any host of the cluster).
 - `POST /results` `{node_id, batch_id, save_mode, ok_count, ok_ids:[[tc,si],...], mismatches:[{test_case_id, state_index, got_final_state|null, got_exception_kind|null, status:"mismatch"|"crash"|"skipped"}], elapsed_s}`. The controller advances the cursor and classifies each mismatch.
 - `POST /heartbeat` `{node_id, batch_id, done_in_batch, qemu_restarts}`, sent about every 30s.
+- A batch may be a replay batch: inputs queued for the node's cluster (section 3), served ahead of the cursor and possibly several times in a row. The worker runs and reports it like any other batch; the controller keeps its results apart and moves neither the cursor nor the counters.
 
 State/diff JSON uses the same flat keys as x86db (`rax`, `flag`, `x87_r0`, `mm0`, `xmm0`, `mem0_value`, ...). Comparison is exact over every key.
 
 ## 3. Controller
 
 - Reads `test_cases` and `test_results` from the local x86db (`X86DB_DSN`). It never writes to them.
-- New tables: `g5k_nodes`, `g5k_results`, `g5k_events`, `g5k_batches`, `instruction_features(instruction_id, feature)` (filled by a CLI command using iced-x86 Python on the opcode).
+- New tables: `g5k_nodes`, `g5k_results`, `g5k_events`, `g5k_batches`, `g5k_replays`, `instruction_features(instruction_id, feature)` (filled by a CLI command using iced-x86 Python on the opcode).
 - Mismatch classes: `undef_flags_only` (only bits in `instruction_undefined_flags` differ), `defined_state`, `exception_mismatch`, `crash`.
+- Replay: `controller replay add` queues an input (test case and state) for a cluster in `g5k_replays`; any node of the cluster runs it. The outcome is only recorded there. `controller replay report` compares it, exactly (status, exception kind, every captured key), with the rows the cluster's nodes hold in `g5k_results` and proposes `delete` (now ok), `overwrite` (another mismatch) or `insert` (was ok); nothing is proposed when repeated runs disagree. `controller replay apply` carries one kind of action out on every row of the cluster for the inputs concerned.
 - Monitoring:
   - structured logs to stdout and a rotating JSONL file
-  - `GET /status`: a self-refreshing HTML page with per-node progress, rate, ETA, mismatch classes, last seen and silent-node warnings; a per-CPU-model aggregate; recent events
+  - `GET /status`: a self-refreshing HTML dashboard: objective coverage (one finished node per CPU model of `controller/controller/targets.csv`, grouped by microarchitecture), per-run progress, rate, ETA, mismatch classes, last seen and silent-node warnings; recent events
   - `GET /status.json`
   - `GET /mismatches?class=&host=&insn=`
-- Config comes from env: `X86DB_DSN`, `CONTROLLER_TOKEN`, `LISTEN` (default 0.0.0.0:8080), `LOG_DIR`.
+- Config comes from env: `X86DB_DSN`, `CONTROLLER_TOKEN`, `LISTEN` (default 0.0.0.0:8080), `LOG_DIR`, `TARGETS_FILE` (default: the packaged `targets.csv`).
 
 ## 4. Grid5000
 

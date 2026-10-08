@@ -11,6 +11,8 @@ class Config:
     silent_after_s: float = 120.0
     # Extra libpq/psycopg connection kwargs (used by tests for search_path).
     conn_kwargs: dict | None = None
+    # Objective table; empty = the packaged targets.csv.
+    targets_file: str = ""
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -23,4 +25,5 @@ class Config:
             listen=os.environ.get("LISTEN", "0.0.0.0:8080"),
             log_dir=os.environ.get("LOG_DIR", "./logs"),
             silent_after_s=float(os.environ.get("SILENT_AFTER_S", "120")),
+            targets_file=os.environ.get("TARGETS_FILE", ""),
         )
