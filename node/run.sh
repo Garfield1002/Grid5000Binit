@@ -10,6 +10,7 @@
 # Optional: BATCH_SIZE (1000), TIMEOUT_MS (10000).
 # G5K nodes reach the internet directly; if a site needs a web proxy, set https_proxy and
 # no_proxy in ~/g5kbinit/env.
+# EMULATED=1 runs the guest under QEMU's emulator instead of KVM (a run of its own on the controller).
 set -uo pipefail
 
 BASE="${G5KBINIT_DIR:-$HOME/g5kbinit}"
@@ -34,15 +35,17 @@ if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
 fi
 QEMU="$(command -v qemu-system-x86_64)"
 
-if [[ ! -e /dev/kvm ]]; then
+mode=""
+if [[ "${EMULATED:-0}" == 1 ]]; then
+    mode=--emulated
+elif [[ ! -e /dev/kvm ]]; then
     log "ERROR: /dev/kvm missing (virtualization disabled on this node?)"; exit 1
-fi
-if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
+elif [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
     sudo chmod 666 /dev/kvm || sudo-g5k chmod 666 /dev/kvm || { log "cannot chmod /dev/kvm"; exit 1; }
 fi
 
 cpu="$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | xargs)"
-log "host=$HOST cpu='$cpu' qemu=$QEMU controller=$CONTROLLER_URL proxy=${https_proxy:-none}"
+log "host=$HOST cpu='$cpu' qemu=$QEMU emulated=${EMULATED:-0} controller=$CONTROLLER_URL proxy=${https_proxy:-none}"
 
 chmod +x "$BASE/g5k-worker" 2>/dev/null || true
 fails=0
@@ -58,7 +61,7 @@ while :; do
     log "starting worker"
     start=$SECONDS
     "${limit[@]}" "$BASE/g5k-worker" --bootimage "$BASE/aegis-bootimage.bin" --qemu "$QEMU" \
-        --batch-size "${BATCH_SIZE:-1000}" --timeout-ms "${TIMEOUT_MS:-10000}" --once
+        --batch-size "${BATCH_SIZE:-1000}" --timeout-ms "${TIMEOUT_MS:-10000}" --once $mode
     rc=$?
     if [[ $rc -eq 0 ]]; then
         log "worker exited 0: controller reported done"; exit 0

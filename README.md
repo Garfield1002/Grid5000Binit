@@ -105,6 +105,17 @@ hand with `-p "host='<fqdn>'"`.
 loop with backoff until it exits 0 (controller has no more cases); any non-zero exit restarts it. Log: `~/g5kbinit/logs/<host>.log`;
 OAR stdout/stderr in `~/g5kbinit/logs/oar.*`.
 
+### Emulated run (QEMU TCG)
+
+`EMULATED=1` makes `node/run.sh` pass `--emulated` to the worker: the guest runs under QEMU's emulator
+(`-accel tcg -cpu max`) instead of KVM, `/dev/kvm` is not needed, and the results describe that QEMU
+version rather than the node's CPU. Any x86_64 Linux machine will do; the run shows up on the controller as
+cluster `qemu-tcg`, CPU model `QEMU <version> TCG (max)`, outside the objective. `~/g5kbinit/env` is
+shared by every job of the site, so `EMULATED=1` goes on the job's own command line, which is what
+`-e` of the submit scripts does (the cluster then only says where QEMU runs):
+
+    ./submit-besteffort.sh -e gros
+
 ## Monitoring
 
 - `scripts/status.sh` (needs `CONTROLLER_URL/TOKEN`): per-node progress, rate, ETA, mismatch classes,

@@ -29,6 +29,7 @@ CONTROLLER_URL=http://host:8080 CONTROLLER_TOKEN=... \
 |---|---|---|
 | `--bootimage` | required | raw boot image of the kernel |
 | `--qemu` | `qemu-system-x86_64` | |
+| `--emulated` | off | run the guest under QEMU's emulator (`-accel tcg -cpu max`) instead of KVM, see below |
 | `--batch-size` | 1000 | cases per `GET /batch` |
 | `--timeout-ms` | 10000 | per-case ack timeout (watchdog) |
 | `--once` | off | exit when the controller has no more cases; otherwise poll every 60 s |
@@ -50,6 +51,10 @@ Env: `CONTROLLER_URL`, `CONTROLLER_TOKEN` (also `--controller-url/-token`).
   `GET /batch` -> run -> compare -> `POST /results`. Heartbeats go out every
   30 s from a thread. HTTP is retried with exponential backoff (1 s to 60 s)
   on network errors, 5xx, 408 and 429; other 4xx are fatal.
+- With `--emulated` the run measures QEMU and not the machine, so it registers as host
+  `tcg-<hostname>`, cluster `qemu-tcg`, CPU model `QEMU <version> TCG (max)`, no microcode and no
+  host CPUID features (the guest's own feature list is used). The controller therefore keeps it
+  apart from the hardware runs, and emulated runs of one QEMU version continue one another.
 - Per case the request is `[32-byte required-feature mask][TestCase]`; the
   result is an XOR diff against the initial state, which the worker XORs back.
   JSON state conversion is adapted from the old `aegis/client`.
