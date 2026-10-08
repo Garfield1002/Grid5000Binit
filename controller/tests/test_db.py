@@ -43,7 +43,9 @@ def client():
           (3,0,'{"rax":1,"flag":2}'),(4,0,'{"rax":1,"flag":2}');
         INSERT INTO test_results(test_case_id,state_index,exception_kind) VALUES (4,1,'UD');
         """)
-    cfg = Config(dsn=DSN, token="tok", log_dir="/tmp", silent_after_s=0.0,
+    # silent_after_s is large so the background loop never flags a node (and adds events) mid-test;
+    # test_silent_detection calls check_silent itself.
+    cfg = Config(dsn=DSN, token="tok", log_dir="/tmp", silent_after_s=3600.0,
                  conn_kwargs={"options": f"-csearch_path={schema}"})
     with TestClient(create_app(cfg)) as tc:
         # features table is part of migration; fill like compute-features would
@@ -63,7 +65,10 @@ def register(client, feats):
 
 def test_auth(client):
     assert client.post("/register", json={"host": "x"}).status_code == 401
-    assert client.get("/status.json", headers=H).json()["events"][0]["kind"] == "auth_failure"
+    assert client.get("/mismatches").status_code == 401
+    assert client.get("/mismatches?token=tok").status_code == 200
+    # A failed auth leaves no trace in the database.
+    assert client.get("/status.json", headers=H).json()["events"] == []
 
 
 def test_feature_filtering_and_cursor(client):
@@ -173,3 +178,26 @@ def test_save_mode(client):
     client.post("/results", headers=H, json={"node_id": nid, "batch_id": b["batch_id"],
                                               "ok_count": len(b["cases"]), "save_mode": "fxsave"})
     assert "fxsave" in client.get("/status", headers=H).text
+
+
+def test_takeover_same_spec(client):
+    def reg(host, microcode="0x1"):
+        return client.post("/register", headers=H, json={
+            "host": host, "cluster": "gros", "cpuid_features": ["SSE"], "microcode": microcode,
+            "cpu_model": "Intel(R) Xeon(R) Gold 5220 CPU @ 2.20GHz", "save_mode": "xsave"}).json()["node_id"]
+
+    a = reg("gros-1")
+    b = client.get(f"/batch?node_id={a}&size=3", headers=H).json()
+    client.post("/results", headers=H, json={"node_id": a, "batch_id": b["batch_id"], "ok_count": 3})
+    # Same spec on another host: continues after gros-1's last reported batch.
+    c = reg("gros-2")
+    b2 = client.get(f"/batch?node_id={c}&size=10", headers=H).json()
+    assert [(x["test_case_id"], x["state_index"]) for x in b2["cases"]] == [(4, 1)]
+    s = client.get("/status.json", headers=H).json()
+    nodes = {n["host"]: n for n in s["nodes"]}
+    assert nodes["gros-1"]["state"] == "moved" and nodes["gros-2"]["done_cases"] == 3
+    assert s["events"][1]["detail"]["resumed_from"] == "gros-1"
+    assert s["cpu_models"]["Intel(R) Xeon(R) Gold 5220 CPU @ 2.20GHz"]["done_cases"] == 3
+    # Another microcode is another run.
+    d = reg("gros-3", "0x2")
+    assert len(client.get(f"/batch?node_id={d}&size=10", headers=H).json()["cases"]) == 4

@@ -19,7 +19,7 @@ a primary research target, so nothing is masked. Full contract: [SPEC.md](SPEC.m
 - `aegis/` kernel (branch `g5k`), built into a bootimage. Worker and kernel sync through an ivshmem
   mailbox (SPEC section 1); a case that times out kills/restarts QEMU and is reported as `crash`.
 - `controller/` serves each node every case whose required CPU features are a subset of the node's
-  features, resuming from a per-node cursor (SPEC sections 2-3). See `controller/README.md`.
+  features, resuming from a cursor shared by nodes of the same spec (SPEC sections 2-3). See `controller/README.md`.
 - `scripts/` (local build + submission on a frontend), `node/run.sh` (runs on each node).
 
 ## Prerequisites
@@ -132,7 +132,7 @@ behaviour differs between microarchitectures.
 - apt cannot install qemu: check the proxy (`curl -I --proxy http://proxy:3128 https://deb.debian.org`)
   and that `apt update` succeeded. Alternative: ship a static qemu in `~/g5kbinit` and pass `--qemu`.
 - Worker cannot reach controller: `curl -v -H "Authorization: Bearer $CONTROLLER_TOKEN" $CONTROLLER_URL/status.json`
-  from the node. 401s show as `auth_failure` events. For tunnels, check `GatewayPorts` and `no_proxy`.
+  from the node. 401s show as `auth_failure` lines in the controller log. For tunnels, check `GatewayPorts` and `no_proxy`.
 - Lots of `crash`: raise `TIMEOUT_MS`, inspect the node log for QEMU stderr; verify `-cpu host` works
   (nested virtualization not involved on bare-metal nodes).
 - Nodes silent after being killed: expected for besteffort; idempotent resubmission restarts them, the
