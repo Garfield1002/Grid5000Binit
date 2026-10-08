@@ -41,6 +41,12 @@ if [[ $skip_worker -eq 0 ]]; then
     echo "==> worker ($TARGET)"
     rustup target add "$TARGET" >/dev/null 2>&1 || true
     # cd so worker/.cargo/config.toml (CC=clang for ring, crt-static) is picked up.
+    # Off Linux, clang finds no musl headers and `cc` cannot link ELF: use a musl cross compiler
+    # for both when there is one (macOS: brew install filosottile/musl-cross/musl-cross).
+    if command -v x86_64-linux-musl-gcc >/dev/null; then
+        export CC_x86_64_unknown_linux_musl="${CC_x86_64_unknown_linux_musl:-x86_64-linux-musl-gcc}"
+        export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER="${CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER:-x86_64-linux-musl-gcc}"
+    fi
     (cd "$ROOT/worker" && cargo build --release --target "$TARGET")
     cp "$ROOT/worker/target/$TARGET/release/g5k-worker" "$DIST/g5k-worker"
 fi
