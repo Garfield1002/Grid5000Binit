@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
@@ -217,6 +218,8 @@ def create_app(cfg: Config) -> FastAPI:
             pool.close()
 
     app = FastAPI(title="Grid5000Binit controller", lifespan=lifespan)
+    # Batches are ~450 B/case of very repetitive JSON (about 38x smaller gzipped).
+    app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)
 
     def get_pool() -> ConnectionPool:
         return pool_holder["pool"]
