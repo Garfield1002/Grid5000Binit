@@ -4,7 +4,9 @@
 # controller has no more cases (done, stop); any non-zero exit (fatal error, signal) restarts it.
 # Needs CONTROLLER_URL / CONTROLLER_TOKEN, from the environment or from ~/g5kbinit/env
 # (written 0600 by the submit scripts, so the token is not visible in `oarstat`).
-# Optional: BATCH_SIZE (1000), TIMEOUT_MS (10000), HTTP_PROXY_URL (http://proxy:3128).
+# Optional: BATCH_SIZE (1000), TIMEOUT_MS (10000).
+# G5K nodes reach the internet directly; if a site needs a web proxy, set https_proxy and
+# no_proxy in ~/g5kbinit/env.
 set -uo pipefail
 
 BASE="${G5KBINIT_DIR:-$HOME/g5kbinit}"
@@ -17,12 +19,6 @@ log() { echo "[$(date -u +%FT%TZ)] run.sh: $*"; }
 : "${CONTROLLER_URL:?CONTROLLER_URL not set}"
 : "${CONTROLLER_TOKEN:?CONTROLLER_TOKEN not set}"
 export CONTROLLER_URL CONTROLLER_TOKEN
-
-# Outbound internet from G5K nodes goes through the site web proxy.
-proxy="${HTTP_PROXY_URL:-http://proxy:3128}"
-export http_proxy="${http_proxy:-$proxy}" https_proxy="${https_proxy:-$proxy}"
-export HTTP_PROXY="$http_proxy" HTTPS_PROXY="$https_proxy"
-export no_proxy="${no_proxy:-localhost,127.0.0.1,.grid5000.fr}" NO_PROXY="${no_proxy}"
 
 # Root: sudo-g5k with no args enables plain sudo for the lifetime of the job.
 log "enabling sudo (sudo-g5k)"
@@ -43,7 +39,7 @@ if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
 fi
 
 cpu="$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | xargs)"
-log "host=$HOST cpu='$cpu' qemu=$QEMU controller=$CONTROLLER_URL proxy=$http_proxy"
+log "host=$HOST cpu='$cpu' qemu=$QEMU controller=$CONTROLLER_URL proxy=${https_proxy:-none}"
 
 chmod +x "$BASE/g5k-worker" 2>/dev/null || true
 fails=0
