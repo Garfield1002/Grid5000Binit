@@ -1,0 +1,234 @@
+# cpu_model (as the worker reports it, from /proc/cpuinfo) -> vendor, microarchitecture, a short
+# label and the year the CPU was launched (optional). The order of this file is the order of the
+# matrix columns. A model that is missing here is shown last, under "?". Whitespace runs and case
+# are ignored when matching.
+
+[[model]]
+cpu_model = "AMD EPYC 7301 16-Core Processor"
+label = "EPYC 7301"
+vendor = "AMD"
+uarch = "Zen"
+year = 2017
+
+[[model]]
+cpu_model = "AMD EPYC 7352 24-Core Processor"
+label = "EPYC 7352"
+vendor = "AMD"
+uarch = "Zen 2"
+year = 2019
+
+[[model]]
+cpu_model = "AMD EPYC 7452 32-Core Processor"
+label = "EPYC 7452"
+vendor = "AMD"
+uarch = "Zen 2"
+year = 2019
+
+[[model]]
+cpu_model = "AMD EPYC 7642 48-Core Processor"
+label = "EPYC 7642"
+vendor = "AMD"
+uarch = "Zen 2"
+year = 2019
+
+[[model]]
+cpu_model = "AMD EPYC 7742 64-Core Processor"
+label = "EPYC 7742"
+vendor = "AMD"
+uarch = "Zen 2"
+year = 2019
+
+[[model]]
+cpu_model = "AMD EPYC 7453 28-Core Processor"
+label = "EPYC 7453"
+vendor = "AMD"
+uarch = "Zen 3"
+year = 2021
+
+[[model]]
+cpu_model = "AMD EPYC 7513 32-Core Processor"
+label = "EPYC 7513"
+vendor = "AMD"
+uarch = "Zen 3"
+year = 2021
+
+[[model]]
+cpu_model = "AMD EPYC 9254 24-Core Processor"
+label = "EPYC 9254"
+vendor = "AMD"
+uarch = "Zen 4"
+year = 2022
+
+[[model]]
+cpu_model = "AMD EPYC 9754 128-Core Processor"
+label = "EPYC 9754"
+vendor = "AMD"
+uarch = "Zen 4c"
+year = 2023
+
+[[model]]
+cpu_model = "AMD EPYC 9135 16-Core Processor"
+label = "EPYC 9135"
+vendor = "AMD"
+uarch = "Zen 5"
+year = 2024
+
+[[model]]
+cpu_model = "Intel(R) Xeon(R) CPU X5670 @ 2.93GHz"
+label = "X5670"
+vendor = "Intel"
+uarch = "Westmere"
+year = 2010
+
+[[model]]
+cpu_model = "Intel(R) Xeon(R) CPU E5-2620 0 @ 2.00GHz"
+label = "E5-2620"
+vendor = "Intel"
+uarch = "Sandy Bridge"
+year = 2012
+
+[[model]]
+cpu_model = "Intel(R) Xeon(R) CPU E5-2630 0 @ 2.30GHz"
+label = "E5-2630"
+vendor = "Intel"
+uarch = "Sandy Bridge"
+year = 2012
+
+[[model]]
+cpu_model = "Intel(R) Xeon(R) CPU E5-2660 0 @ 2.20GHz"
+label = "E5-2660"
+vendor = "Intel"
+uarch = "Sandy Bridge"
+year = 2012
+
+[[model]]
+cpu_model = "Intel(R) Xeon(R) CPU E5-2650 v2 @ 2.60GHz"
+label = "E5-2650 v2"
+vendor = "Intel"
+uarch = "Ivy Bridge"
+year = 2013
+
+[[model]]
+cpu_model = "Intel(R) Xeon(R) CPU E5-2680 v2 @ 2.80GHz"
+label = "E5-2680 v2"
+vendor = "Intel"
+uarch = "Ivy Bridge"
+year = 2013
+
+[[model]]
+cpu_model = "Intel(R) Xeon(R) CPU E5-2630 v3 @ 2.40GHz"
+label = "E5-2630 v3"
+vendor = "Intel"
+uarch = "Haswell"
+year = 2014
+
+[[model]]
+cpu_model = "Intel(R) Xeon(R) CPU E5-2620 v4 @ 2.10GHz"
+label = "E5-2620 v4"
+vendor = "Intel"
+uarch = "Broadwell"
+year = 2016
+
+[[model]]
+cpu_model = "Intel(R) Xeon(R) CPU E5-2630L v4 @ 1.80GHz"
+label = "E5-2630L v4"
+vendor = "Intel"
+uarch = "Broadwell"
+year = 2016
+
+[[model]]
+cpu_model = "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz"
+label = "E5-2680 v4"
+vendor = "Intel"
+uarch = "Broadwell"
+year = 2016
+
+[[model]]
+cpu_model = "Intel(R) Xeon(R) Gold 6126 CPU @ 2.60GHz"
+label = "Gold 6126"
+vendor = "Intel"
+uarch = "Skylake-SP"
+year = 2017
+
+[[model]]
+cpu_model = "Intel(R) Xeon(R) Gold 6130 CPU @ 2.10GHz"
+label = "Gold 6130"
+vendor = "Intel"
+uarch = "Skylake-SP"
+year = 2017
+
+[[model]]
+cpu_model = "Intel(R) Xeon(R) Gold 5218 CPU @ 2.30GHz"
+label = "Gold 5218"
+vendor = "Intel"
+uarch = "Cascade Lake-SP"
+year = 2019
+
+[[model]]
+cpu_model = "Intel(R) Xeon(R) Gold 5220 CPU @ 2.20GHz"
+label = "Gold 5220"
+vendor = "Intel"
+uarch = "Cascade Lake-SP"
+year = 2019
+
+[[model]]
+cpu_model = "Intel(R) Xeon(R) Gold 6248 CPU @ 2.50GHz"
+label = "Gold 6248"
+vendor = "Intel"
+uarch = "Cascade Lake-SP"
+year = 2019
+
+[[model]]
+cpu_model = "Intel(R) Xeon(R) Gold 5318Y CPU @ 2.10GHz"
+label = "Gold 5318Y"
+vendor = "Intel"
+uarch = "Ice Lake-SP"
+year = 2021
+
+[[model]]
+cpu_model = "Intel(R) Xeon(R) Gold 5320 CPU @ 2.20GHz"
+label = "Gold 5320"
+vendor = "Intel"
+uarch = "Ice Lake-SP"
+year = 2021
+
+[[model]]
+cpu_model = "Intel(R) Xeon(R) Platinum 8358 CPU @ 2.60GHz"
+label = "Platinum 8358"
+vendor = "Intel"
+uarch = "Ice Lake-SP"
+year = 2021
+
+[[model]]
+cpu_model = "Intel(R) Xeon(R) Silver 4314 CPU @ 2.40GHz"
+label = "Silver 4314"
+vendor = "Intel"
+uarch = "Ice Lake-SP"
+year = 2021
+
+[[model]]
+cpu_model = "Intel(R) Xeon(R) Platinum 8470"
+label = "Platinum 8470"
+vendor = "Intel"
+uarch = "Sapphire Rapids"
+year = 2023
+
+[[model]]
+cpu_model = "INTEL(R) XEON(R) PLATINUM 8568Y+"
+label = "Platinum 8568Y+"
+vendor = "Intel"
+uarch = "Emerald Rapids"
+year = 2023
+
+[[model]]
+cpu_model = "Intel(R) Xeon(R) 6530P"
+label = "Xeon 6530P"
+vendor = "Intel"
+uarch = "Granite Rapids"
+year = 2025
+
+[[model]]
+cpu_model = "QEMU 10.0.13 TCG (max)"
+label = "QEMU 10.0.13 TCG"
+vendor = "Emulated"
+uarch = "QEMU TCG"
