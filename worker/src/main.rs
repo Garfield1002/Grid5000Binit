@@ -50,6 +50,11 @@ struct Args {
     #[arg(long, default_value = "qemu-system-x86_64")]
     qemu: String,
 
+    /// Run the guest under QEMU's emulator (TCG, `-cpu max`) instead of KVM. The run is
+    /// registered as that QEMU version, not as this host's CPU.
+    #[arg(long)]
+    emulated: bool,
+
     /// Cases requested per batch
     #[arg(long, default_value_t = 1000)]
     batch_size: usize,
@@ -225,6 +230,7 @@ fn run(args: Args) -> Result<()> {
     let cfg = VmConfig {
         reconnect_opt: vm::detect_reconnect_opt(&args.qemu),
         qemu: args.qemu.clone(),
+        emulated: args.emulated,
         bootimage: args.bootimage.canonicalize()?,
         boot_timeout: Duration::from_millis(args.timeout_ms.max(10_000) * 3),
         shm_dir: args.shm_dir.clone().unwrap_or_else(vm::default_shm_dir),
@@ -238,15 +244,30 @@ fn run(args: Args) -> Result<()> {
     let kernel_features: Vec<&str> = names::mask_to_names(&features);
     log!("guest ready: save_mode={} features={}", mode.as_str(), kernel_features.join(","));
 
-    let host = sysinfo::hostname();
-    let (cpu_model, microcode) = sysinfo::cpuinfo();
     let api = Api::new(&args.controller_url, &args.controller_token);
+    // An emulated run measures QEMU, not this machine: it gets its own host name, cluster and
+    // CPU model so that the controller never continues or counts it as a hardware run.
+    let (host, cluster, cpu_model, microcode, cpuid_features) = if args.emulated {
+        let version = vm::qemu_version(&args.qemu).unwrap_or_else(|| "unknown".into());
+        (
+            format!("tcg-{}", sysinfo::hostname()),
+            "qemu-tcg".to_string(),
+            Some(format!("QEMU {version} TCG (max)")),
+            None,
+            Vec::new(),
+        )
+    } else {
+        let host = sysinfo::hostname();
+        let (cpu_model, microcode) = sysinfo::cpuinfo();
+        let cluster = sysinfo::cluster_of(&host);
+        (host, cluster, cpu_model, microcode, names::mask_to_names(&sysinfo::cpuid_mask()))
+    };
     let node_id = api.register(&json!({
         "host": host,
-        "cluster": sysinfo::cluster_of(&host),
+        "cluster": cluster,
         "cpu_model": cpu_model,
         "microcode": microcode,
-        "cpuid_features": names::mask_to_names(&sysinfo::cpuid_mask()),
+        "cpuid_features": cpuid_features,
         "kernel_features": kernel_features,
         "save_mode": mode.as_str(),
         "worker_version": WORKER_VERSION,

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Usage: CONTROLLER_URL=... CONTROLLER_TOKEN=... submit-besteffort.sh [-w walltime] [-t type] [-q queue] <cluster...>
+# Usage: CONTROLLER_URL=... CONTROLLER_TOKEN=... submit-besteffort.sh [-w walltime] [-t type] [-q queue] [-e] <cluster...>
 # Best-effort + idempotent OAR jobs (run on the site frontend), one per cluster on any free host.
 # Best-effort jobs are killed when someone reserves the node;
 # "idempotent" makes OAR resubmit them, on any host of the cluster, and the controller lets the new host
 # resume where the previous one stopped.
 # -t exotic is needed for exotic clusters, -q production for the production queue.
+# -e submits an emulated run (QEMU TCG instead of KVM) on a host of that cluster.
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 G5K_WALLTIME="24:00:00" G5K_EXTRA="-t besteffort -t idempotent"

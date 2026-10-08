@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Usage: CONTROLLER_URL=... CONTROLLER_TOKEN=... submit-reserve.sh [-w walltime] [-t type] [-q queue] <cluster...>
+# Usage: CONTROLLER_URL=... CONTROLLER_TOKEN=... submit-reserve.sh [-w walltime] [-t type] [-q queue] [-e] <cluster...>
 # Regular (non-besteffort) OAR jobs, one per cluster on any free host. Default walltime 2:00:00
 # (note: G5K restricts long jobs during the day; use -w 12:00:00 and a night/weekend submission).
 # -t exotic is needed for exotic clusters, -q production for the production queue.
+# -e submits an emulated run (QEMU TCG instead of KVM) on a host of that cluster.
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 G5K_WALLTIME="2:00:00" G5K_EXTRA=""

@@ -30,6 +30,8 @@ pub const SHM_SIZE: u64 = 16 * 1024 * 1024;
 #[derive(Clone, Debug)]
 pub struct VmConfig {
     pub qemu: String,
+    /// Run the guest under TCG (`-cpu max`) instead of KVM (`-cpu host`).
+    pub emulated: bool,
     /// Serial reconnect option: `reconnect=1` (QEMU < 9.2) or `reconnect-ms=1000`.
     pub reconnect_opt: String,
     pub bootimage: PathBuf,
@@ -110,7 +112,8 @@ impl Vm {
         };
 
         let child = Command::new(&cfg.qemu)
-            .args(["-enable-kvm", "-cpu", "host", "-drive"])
+            .args(if cfg.emulated { &["-accel", "tcg", "-cpu", "max"][..] } else { &["-enable-kvm", "-cpu", "host"] })
+            .arg("-drive")
             // snapshot=on: the image sits on the site's NFS home and is shared by every node
             // there; opened read-write, the first QEMU holds its write lock and the others fail.
             .arg(format!("format=raw,snapshot=on,file={}", cfg.bootimage.display()))
@@ -327,4 +330,13 @@ pub fn detect_reconnect_opt(qemu: &str) -> String {
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr))
         .unwrap_or_default();
     if help.contains("reconnect-ms") { "reconnect-ms=1000".into() } else { "reconnect=1".into() }
+}
+
+/// Version of the QEMU binary (`7.2.19`), from the first line of `--version`.
+pub fn qemu_version(qemu: &str) -> Option<String> {
+    let out = Command::new(qemu).arg("--version").stdin(Stdio::null()).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut words = text.lines().next()?.split_whitespace();
+    words.find(|w| *w == "version")?;
+    words.next().map(str::to_string)
 }
