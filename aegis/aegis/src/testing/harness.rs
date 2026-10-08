@@ -28,7 +28,7 @@ use crate::{
     },
     println,
 };
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use spin::Mutex;
 
 pub const ICE_START: usize = 0x_6666_6666_0000;
@@ -239,6 +239,10 @@ pub fn save_mode() -> u32 {
     SAVE_MODE.load(Ordering::Relaxed)
 }
 
+/// XCR0 value chosen by `init_cpu`; `run_test` restores it when a case
+/// (XSETBV) changed it, so the change cannot leak into the next case.
+pub static KERNEL_XCR0: AtomicU64 = AtomicU64::new(0);
+
 /// Features usable by the kernel (set by `init_cpu`).
 pub static KERNEL_FEATURES: Mutex<FeatureMask> = Mutex::new([0; FEATURE_WORDS]);
 
@@ -249,6 +253,11 @@ pub fn init_cpu() -> (FeatureMask, u32) {
     let cpuid = CpuId::new();
     let f1 = cpuid.get_feature_info();
     let has_xsave = f1.as_ref().is_some_and(|f| f.has_xsave());
+
+    // With CR0.NE clear an unmasked x87 exception is signalled through FERR#
+    // instead of #MF; the guest has no such interrupt and the CPU waits
+    // forever (seen on AMD; VMX forces NE on).
+    unsafe { Cr0::update(|flags| *flags |= Cr0Flags::NUMERIC_ERROR) };
 
     // OSXSAVE must be enabled before CPUID reports OSXSAVE support, and may
     // only be set when XSAVE exists.
@@ -282,6 +291,7 @@ pub fn init_cpu() -> (FeatureMask, u32) {
             }
         }
         unsafe { XCr0::write(xcr0) };
+        KERNEL_XCR0.store(xcr0.bits(), Ordering::SeqCst);
     }
 
     // Select the save/restore variant once: XSAVE needs XSAVE and OSXSAVE.
@@ -402,6 +412,14 @@ pub extern "C" fn run_test() -> ! {
             None => panic!("No dataset"),
         }
     };
+
+    // Reading XCR0 does not exit to the hypervisor; writing does.
+    if save_mode() == SAVE_MODE_XSAVE {
+        let xcr0 = KERNEL_XCR0.load(Ordering::Relaxed);
+        if XCr0::read_raw() != xcr0 {
+            unsafe { XCr0::write_raw(xcr0) };
+        }
+    }
 
     *TEST_ID.lock() = test.id;
     // Save the instruction for error logging
