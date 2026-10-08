@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# Usage: CONTROLLER_URL=... CONTROLLER_TOKEN=... submit-reserve.sh [-w walltime] <cluster...>
-# One regular (non-besteffort) OAR job per node of each cluster. Default walltime 2:00:00
+# Usage: CONTROLLER_URL=... CONTROLLER_TOKEN=... submit-reserve.sh [-w walltime] [-t type] [-q queue] <cluster...>
+# Regular (non-besteffort) OAR jobs, one per cluster on any free host. Default walltime 2:00:00
 # (note: G5K restricts long jobs during the day; use -w 12:00:00 and a night/weekend submission).
+# -t exotic is needed for exotic clusters, -q production for the production queue.
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/common.sh"
-walltime="2:00:00"
-while getopts "w:h" o; do case $o in w) walltime=$OPTARG;; *) sed -n '2,3p' "$0"; exit 2;; esac; done
-shift $((OPTIND - 1))
-[[ $# -ge 1 ]] || { sed -n '2,3p' "$0"; exit 2; }
+G5K_WALLTIME="2:00:00" G5K_EXTRA=""
+g5k_parse_opts '2,3p' "$@"
 g5k_check_env
 g5k_write_env
-g5k_submit_all "$walltime" "" "$@"
+g5k_submit_all "$G5K_WALLTIME" "$G5K_EXTRA" "${G5K_CLUSTERS[@]}"

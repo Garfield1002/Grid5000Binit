@@ -1,6 +1,7 @@
 # Grid5000Binit — design spec (shared contract)
 
-Goal: run Aegis hardware capture on every Grid5000 node; test cases streamed from a
+Goal: run Aegis hardware capture on as many distinct Grid5000 CPU models as possible (one or a
+few nodes per cluster, clusters being homogeneous); test cases streamed from a
 CONTROLLER; nodes report per-case `ok` or the observed diff. Differences in
 *undefined* flags are a primary research target — never mask anything.
 
@@ -66,4 +67,4 @@ State/diff JSON uses the same flat keys as x86db (`rax`, `flag`, `x87_r0`, `mm0`
 
 - `scripts/build.sh` (local) builds the bootimage on aegis branch `g5k` and the static musl worker, then rsyncs `dist/` to `<site>.g5k:~/g5kbinit/`.
 - `node/run.sh` (on the node) runs `sudo-g5k`, installs qemu-system-x86 with apt if missing, makes `/dev/kvm` accessible, and loops `g5k-worker --once`: exit 0 = controller has no more cases (stop), non-zero = restart with backoff.
-- `scripts/submit-besteffort.sh <cluster...>` and `scripts/submit-reserve.sh <cluster...> [walltime]` share `scripts/common.sh`. They `oarsub` one job per node (`-l host=1`) on each cluster.
+- `scripts/submit-besteffort.sh <cluster...>` and `scripts/submit-reserve.sh <cluster...> [walltime]` share `scripts/common.sh`. They `oarsub` one unpinned job per cluster (`-l host=1 -p "cluster='X'"`); `-t`/`-q` pass extra OAR job types and the queue (exotic, production).
