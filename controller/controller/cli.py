@@ -49,6 +49,7 @@ def main(argv=None) -> None:
     sub = p.add_subparsers(dest="cmd")
     sub.add_parser("compute-features", help="fill instruction_features from opcodes via iced-x86")
     sub.add_parser("migrate", help="create/upgrade g5k_* tables")
+    sub.add_parser("backfill-counts", help="rebuild g5k_class_counts from g5k_results (one long scan, no downtime)")
     sub.add_parser("serve", help="run the HTTP controller (default LISTEN=0.0.0.0:8080)")
     args = p.parse_args(argv)
 
@@ -58,6 +59,10 @@ def main(argv=None) -> None:
     if args.cmd == "compute-features":
         dsn = os.environ.get("X86DB_DSN", "postgresql://x86db:x86db@localhost:5432/x86db")
         print(compute_features(dsn))
+    elif args.cmd == "backfill-counts":
+        from .schema import backfill_class_counts
+        dsn = os.environ.get("X86DB_DSN", "postgresql://x86db:x86db@localhost:5432/x86db")
+        print(f"counted {backfill_class_counts(dsn)} results")
     elif args.cmd == "migrate":
         from psycopg_pool import ConnectionPool
         from .schema import migrate
