@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>x86db explorer</title>
+<link rel="stylesheet" href="/static/explorer.css">
+</head>
+<body data-view="test_case">
+<nav>
+  <a id="home" href="/"><b>x86db explorer</b></a><span id="crumbs"></span>
+  <span class="right"><a href="/checks">checks</a></span>
+</nav>
+<p id="error" class="banner" hidden></p>
+
+<main id="page" hidden>
+<p id="banner" class="banner" hidden></p>
+
+<h1><code id="insn"></code></h1>
+<p id="about"></p>
+
+<form id="filters" class="filters">
+  <span class="grp"><b>Classes</b> <span id="classes"></span></span>
+  <details id="keys-box">
+    <summary><b>Diff keys</b><span id="ignored"></span></summary>
+    <div id="keys" class="keys"></div>
+  </details>
+  <span class="grp">
+    <a id="no-x87">ignore x87 pointers</a>
+    <a id="everything">show everything</a>
+  </span>
+  <p class="mut small">A count is left out only when its class is off or all of its differing keys are ignored.</p>
+</form>
+
+<h2>Behaviour groups</h2>
+<p class="mut small">Models in one group got the same values on the same states.</p>
+<table class="groups">
+  <thead><tr><th></th><th>models</th><th>result</th></tr></thead>
+  <tbody id="groups"></tbody>
+</table>
+
+<div id="states" hidden>
+  <h2>States</h2>
+  <p class="mut small">
+    Keys that differ from the reference, read from the first model of each group. Greyed keys are
+    ignored by the filter. <a id="first" hidden>from the first state</a>
+  </p>
+  <div class="scroll">
+    <table class="grid">
+      <thead><tr id="grid-head"></tr></thead>
+      <tbody id="grid"></tbody>
+    </table>
+  </div>
+  <p><a id="more" hidden></a></p>
+</div>
+<p id="none" hidden>No model has a mismatch on this test case with the current filter.</p>
+</main>
+
+<script src="/static/explorer.js"></script>
+</body>
+</html>
